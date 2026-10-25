@@ -1,0 +1,31 @@
+{
+  "name": "salonos",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,worker,web -c blue,magenta,green \"npm run dev -w @salon/api\" \"npm run worker:dev -w @salon/api\" \"npm run dev -w @salon/web\"",
+    "build": "npm run build -w @salon/shared && npm run build -w @salon/api && npm run build -w @salon/web",
+    "typecheck": "npm run typecheck -w @salon/shared && npm run typecheck -w @salon/api && npm run typecheck -w @salon/web && tsc -p e2e/tsconfig.json --noEmit",
+    "test": "npm run test -w @salon/shared && npm run test -w @salon/api",
+    "test:e2e": "playwright test",
+    "db:setup": "npm run db:setup -w @salon/api",
+    "db:migrate": "npm run db:migrate -w @salon/api",
+    "db:seed": "npm run db:seed -w @salon/api",
+    "db:reset": "npm run db:reset -w @salon/api",
+    "test:e2e:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1",
+    "concurrently": "9.2.5",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

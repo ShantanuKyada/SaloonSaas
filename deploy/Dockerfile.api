@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+# API + worker image (same code, different command). Build from the repository root:
+#   docker build -f deploy/Dockerfile.api -t salonos-api .
+
+ARG NODE_VERSION=24
+
+FROM node:${NODE_VERSION}-bookworm-slim AS manifests
+WORKDIR /repo
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/package.json
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+
+FROM manifests AS build
+RUN npm ci --workspace @salon/shared --workspace @salon/api --include-workspace-root
+COPY packages/shared packages/shared
+COPY apps/api apps/api
+RUN npm run build -w @salon/shared && npm run build -w @salon/api
+
+FROM manifests AS deps
+RUN npm ci --omit=dev --workspace @salon/shared --workspace @salon/api
+
+FROM node:${NODE_VERSION}-bookworm-slim AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin salon
+COPY --from=deps /repo/node_modules ./node_modules
+COPY --from=deps /repo/package.json ./package.json
+COPY --from=build /repo/packages/shared/package.json packages/shared/package.json
+COPY --from=build /repo/packages/shared/dist packages/shared/dist
+COPY --from=build /repo/apps/api/package.json apps/api/package.json
+COPY --from=build /repo/apps/api/dist apps/api/dist
+USER salon
+WORKDIR /app/apps/api
+EXPOSE 4000
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||4000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# API by default; the worker uses: node dist/worker.js   migrations: node dist/db/migrate.js
+CMD ["node", "dist/server.js"]

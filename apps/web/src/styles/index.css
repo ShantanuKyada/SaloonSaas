@@ -1,0 +1,204 @@
+@import 'tailwindcss';
+
+/* ───────────── Design tokens ─────────────
+   Semantic colours switch between light and dark through CSS variables, so every component uses the same tokens
+   (bg-surface, text-muted, border-line …) and never hard-codes a theme. */
+:root {
+  --bg: #f6f6f9;
+  --surface: #ffffff;
+  --surface-2: #f1f1f6;
+  --surface-3: #e8e8f0;
+  --line: #e2e2ea;
+  --line-strong: #cfcfdb;
+  --fg: #17172b;
+  --muted: #5d5d78;
+  --faint: #62627d;
+  --primary: #6d28d9;
+  --primary-hover: #5b21b6;
+  --primary-fg: #ffffff;
+  --primary-soft: #efe9fe;
+  --primary-soft-fg: #4c1d95;
+  --success: #166534;
+  --success-soft: #dcf5e3;
+  --warning: #92400e;
+  --warning-soft: #fdf0d2;
+  --danger: #c0262d;
+  --danger-soft: #fde4e4;
+  --info: #1d4ed8;
+  --info-soft: #e0eaff;
+  --ring: #8b5cf6;
+  --shadow: 0 1px 2px rgb(23 23 43 / 0.06), 0 1px 3px rgb(23 23 43 / 0.08);
+  --shadow-lg: 0 10px 30px rgb(23 23 43 / 0.16);
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --bg: #0f0f1a;
+  --surface: #171726;
+  --surface-2: #1f1f31;
+  --surface-3: #292940;
+  --line: #2c2c44;
+  --line-strong: #3b3b58;
+  --fg: #ededf8;
+  --muted: #a4a4c0;
+  --faint: #9090ad;
+  --primary: #a78bfa;
+  --primary-hover: #c4b5fd;
+  --primary-fg: #15102b;
+  --primary-soft: #2a2250;
+  --primary-soft-fg: #ddd3ff;
+  --success: #4ade80;
+  --success-soft: #12311f;
+  --warning: #fbbf24;
+  --warning-soft: #3a2a0c;
+  --danger: #f87171;
+  --danger-soft: #3d1517;
+  --info: #7aa7ff;
+  --info-soft: #14254d;
+  --ring: #a78bfa;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.5);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-fg: var(--primary-soft-fg);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --shadow-card: var(--shadow);
+  --shadow-pop: var(--shadow-lg);
+  --radius-card: 0.75rem;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    font-family: var(--font-sans);
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Visible keyboard focus everywhere (accessibility). */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  button,
+  [role='button'],
+  a,
+  select,
+  summary {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+  ::selection {
+    background: var(--primary-soft);
+    color: var(--primary-soft-fg);
+  }
+  /* Respect reduced-motion preferences. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Calendar helpers */
+.hatch {
+  background-image: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--faint) 22%, transparent) 6px 7px);
+}
+.pulse-dot {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+  background-size: 400% 100%;
+  animation: skeleton 1.4s ease infinite;
+  border-radius: 6px;
+}
+@keyframes skeleton {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* Receipts and reports print cleanly without app chrome. */
+@media print {
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .print-area {
+    box-shadow: none !important;
+    border: 0 !important;
+  }
+}
+.print-only {
+  display: none;
+}
+
+/* Toasts carry actions such as "Undo". Radix modals switch off pointer events outside themselves, which would make an
+   Undo shown while a drawer is open impossible to click. */
+[data-sonner-toaster] {
+  pointer-events: auto;
+  z-index: 100;
+}

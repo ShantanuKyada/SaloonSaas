@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.7
+# Web image: the built single-page app served by nginx, which also proxies /api to the API.
+#   docker build -f deploy/Dockerfile.web -t salonos-web .
+
+ARG NODE_VERSION=24
+
+FROM node:${NODE_VERSION}-bookworm-slim AS build
+WORKDIR /repo
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/package.json
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+RUN npm ci --workspace @salon/shared --workspace @salon/web --include-workspace-root
+COPY packages/shared packages/shared
+COPY apps/web apps/web
+RUN npm run build -w @salon/shared && npm run build -w @salon/web
+
+FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+COPY deploy/nginx/web.conf /etc/nginx/conf.d/default.conf
+COPY deploy/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
+COPY --from=build /repo/apps/web/dist /usr/share/nginx/html
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=3s --retries=3 CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
