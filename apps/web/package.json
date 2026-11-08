@@ -14,7 +14,7 @@
     "@date-fns/tz": "1.5.0",
     "@hookform/resolvers": "5.9.2",
     "@salon/shared": "1.0.0",
-    "@tanstack/react-query": "5.104.5",
+    "@tanstack/react-query": "5.106.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
@@ -24,7 +24,7 @@
     "radix-ui": "1.8.1",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "react-hook-form": "7.90.0",
+    "react-hook-form": "7.91.0",
     "react-router": "7.18.4",
     "recharts": "3.10.1",
     "sonner": "2.0.8",
@@ -32,12 +32,12 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "4.3.3",
+    "@tailwindcss/vite": "4.3.4",
     "@types/qrcode": "1.5.6",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "5.2.0",
-    "tailwindcss": "4.3.3",
+    "tailwindcss": "4.3.4",
     "vite": "7.3.7",
     "vitest": "4.1.12"
   }
