@@ -63,7 +63,10 @@ public issue for a suspected vulnerability.
   in `localStorage`.
 * **Refresh tokens** are 256-bit random values stored hashed. They live in an `HttpOnly`, `SameSite=Strict` cookie
   scoped to `/api/v1/auth` (`Secure` in production). Each refresh **rotates** the token. Presenting an already-used
-  token revokes the whole token family and writes an `auth.refresh_reuse` audit entry (theft detection).
+  token revokes the whole token family and writes an `auth.refresh_reuse` audit entry (theft detection). Because tabs
+  share the cookie, the web app renews one tab at a time (a Web Lock around the refresh call), so tabs opened together
+  never present the same token twice; otherwise they would trip theft detection and sign the person out everywhere.
+  Covered by `auth.spec.ts` (two tabs opened at the same moment).
 * **CSRF.** The cookie-authenticated endpoints (`/auth/refresh`, `/auth/logout`) require the header
   `X-Requested-With: salonos`, which a cross-site form or image cannot send. All other endpoints use the bearer
   token, which browsers never attach automatically.
