@@ -5,15 +5,16 @@ before a go-live decision and updated whenever the answer changes.
 
 **Verdict.** The product is functionally complete for the scope in the brief and is ready for a **staging or pilot
 deployment** with a real salon. Before taking real customer money and data in production, close the items in section 7
-marked *before go-live* (mostly: build and scan the container images in your CI, test the real messaging providers with your
-own accounts, and require two-step sign-in for owners). Nothing in the application code is known to be broken.
+marked *before go-live* (mostly: add an image scan to CI, test the real messaging providers with your own accounts, and
+require two-step sign-in for owners). Nothing in the application code is known to be broken.
 
 ## 1. Evidence
 
 | Check | Result |
 | --- | --- |
 | TypeScript, strict mode, no unused code (`npm run typecheck`: shared, API, web, end-to-end tests) | Clean |
-| Unit and integration tests (`npm test`) | **158 passing**: 22 shared (money, phone, status rules, two-step policy), 23 scheduling engine, 13 TOTP (RFC 6238 vectors), 100 API integration tests against a real PostgreSQL (tenant isolation, permissions, double-booking races, ledger integrity, idempotency, consent, notification failure isolation, route guards, two-step sign-in) |
+| Unit and integration tests (`npm test`) | **158 passing**: 22 shared (money, phone, status rules, two-step policy), 23 scheduling engine, 13 TOTP (RFC 6238 vectors), 100 API integration tests against a real PostgreSQL (tenant isolation, permissions, double-booking races, ledger integrity, idempotency, consent, notification failure isolation, route guards, two-step sign-in). Passing on every day of the week: the suite was run with the clock of both Node and PostgreSQL moved through all seven days |
+| Continuous integration (GitHub Actions) | Runs on every pull request: typecheck, tests, build, dependency audit, both container images and the browser tests. Its first runs, and a test run on a Thursday, exposed the three time-dependent failures in section 2 (now fixed) |
 | Browser end-to-end tests (`npm run test:e2e`) | **99 tests** in desktop Chrome and a phone profile: sign-in/out, two-step sign-in (set-up, code, recovery codes, policy, reset), roles, front desk, walk-ins, billing and credit, collections, team set-up, users and roles, settings, reports and CSV download, messages, online booking, keyboard shortcuts, mobile layout, accessibility |
 | Automated accessibility (axe-core, WCAG 2.1 A and AA) | **0 violations** on 18 screens in light and dark themes, plus the booking drawer, customer dialog, appointment drawer, cancel confirmation, shortcuts help and the two-step set-up, code and recovery-code screens |
 | Production dependencies (`npm audit --omit=dev`) | 0 known vulnerabilities |
@@ -43,6 +44,9 @@ The end-to-end and accessibility work earned its keep. Each item below was a rea
 | Hardening | Example secrets in `.env.example` would have been accepted in production; the demo seed could be run against production; static pages lacked HSTS | Startup refuses example secrets and the zero key; seed refuses to run in production; nginx sends HSTS |
 | Two-step sign-in | When an owner switched the policy on, people already working got an error toast from a background refresh instead of being taken to set-up | Any `MFA_SETUP_REQUIRED` answer reloads the signed-in user (the guard then moves them to *Account security*) and is not shown as an error; covered by `two-factor.spec.ts` |
 | Tests | The walk-in lifecycle test picked "Free until 12:30 PM" as if it were free all day and failed when a booking began soon after | It now picks someone who is free for good |
+| Front desk | After *Check in* or *Start service*, the confirmation toast covered the drawer's next button (*Start service*, *Complete service*); hovering pauses a toast, so it stayed in the way while the pointer rested where the person had just clicked. Found when `front-desk.spec.ts` timed out in CI | Toasts appear at the bottom left, clear of the right-aligned buttons of every drawer, dialog and save bar |
+| Tests | API booking tests failed every Thursday: their date, three days ahead, fell on a Sunday, when new salons close at 18:00, so their evening bookings were refused as outside opening hours | Test bookings use `bookingDate()`, which skips Sundays; verified with the clock moved through all seven days |
+| Tests | When nobody was free for the rest of the day (everyone free had a booking later), the walk-in lifecycle test waited out its 90-second timeout instead of skipping | It waits for the team's live status to load, then skips if nobody is free for good |
 | Accessibility | Low-contrast secondary text and warning badges, white initials on light avatars, "Continue setup" button in dark theme, a calendar built from invalid grid roles, accessible names that did not contain the visible text, a definition list used as cards | Tokens darkened, avatar text chosen by contrast, calendar uses buttons in a labelled region, names include visible text, lists |
 
 ## 3. Requirement coverage
@@ -98,11 +102,10 @@ Marked **before go-live** where a real salon's money or customers are at stake.
 
 | Item | Why it matters | Suggested action |
 | --- | --- | --- |
-| **Before go-live:** build the images in CI and scan them | The Docker daemon was not available where this was developed, so the Dockerfiles, nginx config and compose stack were validated statically (`compose config`) and the same builds were run natively, but the images themselves have not been built | CI already builds both images; add an image scan (Trivy or Grype) and run `docker compose up` once in staging |
+| **Before go-live:** scan the container images | CI builds both images on every pull request and the builds pass, but nothing scans them for known vulnerabilities, and the compose stack has not yet been started from them | Add an image scan (Trivy or Grype) to the `images` job in CI and run `docker compose up` once in staging |
 | **Before go-live:** exercise the real messaging providers | WhatsApp Cloud, SMTP and the HTTP SMS gateway are implemented behind one interface and tested with a console provider and simulated failures, not against live accounts | In staging, connect your accounts in *Settings → Connections*, send a test message on each channel, and confirm delivery receipts arrive |
 | **Before go-live:** switch two-step sign-in on | Built (authenticator app, recovery codes, salon policy) but **optional until the owner requires it** | In each salon choose *Settings → Privacy → Required for owners and managers* (at least owners); have every owner enrol and file their recovery codes; platform administrators are required automatically in production |
 | **Before go-live:** attendance device vendor | Biometric support is a generic HTTP pull API and a signed push webhook, not a vendor-specific SDK | Confirm your device exposes one of the two, or add a small adapter |
-| CI workflow has not run | It is validated by reading, not by GitHub | Open the first pull request and fix any environment difference |
 | Status changes are not date-restricted | A receptionist can check in or complete an appointment dated months away; it is a deliberate-action mistake, not a security issue | Optionally restrict check-in, start and complete to the appointment's day (tests would then book for today) |
 | Rate limits are in memory per process | Multiple API replicas multiply the limits | Use a shared store (Redis) when scaling out |
 | Outbound URL check resolves DNS once | Theoretical DNS rebinding for user-supplied gateway URLs | Egress firewall rule that blocks private ranges from the API host |

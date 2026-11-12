@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
-import { at, authed, createBranch, createCustomer, createService, createStaff, createTenant, createUserWithRole, futureDate, type Tenant } from './helpers.js';
+import { at, authed, bookingDate, createBranch, createCustomer, createService, createStaff, createTenant, createUserWithRole, type Tenant } from './helpers.js';
 import { withSystem } from '../src/db/tenant.js';
 
 let t: Tenant;
@@ -10,7 +10,7 @@ let facial: string;
 let rahul: string;
 let priya: string;
 let customerId: string;
-const date = futureDate(3);
+const date = bookingDate(3);
 
 const book = (body: Record<string, unknown>, token = () => t.owner.token) => authed(token()).post('/appointments').send({ branchId: t.branchId, notifyCustomer: true, ...body });
 const item = (serviceId: string, staffId: string, time: string, extra: Record<string, unknown> = {}) => ({ serviceId, staffId, startAt: at(date, time), ...extra });
@@ -86,7 +86,7 @@ describe('booking', () => {
   });
 
   it('refuses bookings during staff leave', async () => {
-    const leaveDate = futureDate(5);
+    const leaveDate = bookingDate(5);
     const leave = await owner.post('/staff-leaves').send({ staffId: priya, startDate: leaveDate, endDate: leaveDate });
     expect(leave.status).toBe(201);
     const res = await book({ customerId, items: [{ serviceId: facial, staffId: priya, startAt: at(leaveDate, '12:00') }] });
@@ -141,7 +141,7 @@ describe('availability', () => {
   });
 
   it('reports on-leave staff', async () => {
-    const leaveDate = futureDate(5);
+    const leaveDate = bookingDate(5);
     const res = await owner.get(`/scheduling/availability?branchId=${t.branchId}&date=${leaveDate}&serviceIds=${facial}`);
     expect(res.body.data.staff[0]).toMatchObject({ displayName: 'Priya', state: 'on_leave', slots: [] });
   });

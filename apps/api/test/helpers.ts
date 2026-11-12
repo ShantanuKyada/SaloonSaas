@@ -110,6 +110,17 @@ export function futureDate(daysAhead = 3): string {
   return DateTime.now().setZone(TZ).plus({ days: daysAhead }).toISODate()!;
 }
 
+/**
+ * A future date to book on: `daysAhead` days from today, moved to Monday if that falls on a Sunday. New salons close at
+ * 18:00 on Sundays instead of 20:00 (DEFAULT_HOURS in modules/organizations/provision.ts), so evening bookings on a
+ * Sunday are refused as outside opening hours, and tests using a plain `futureDate` failed on whichever weekday put
+ * their date on a Sunday. Use `futureDate` for relative dates that are not booked (today, yesterday, as-of dates).
+ */
+export function bookingDate(daysAhead = 3): string {
+  const day = DateTime.now().setZone(TZ).plus({ days: daysAhead });
+  return (day.weekday === 7 ? day.plus({ days: 1 }) : day).toISODate()!;
+}
+
 export function at(date: string, time: string): string {
   return DateTime.fromISO(`${date}T${time}`, { zone: TZ }).toUTC().toISO()!;
 }

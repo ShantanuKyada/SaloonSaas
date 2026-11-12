@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
 import { withSystem } from '../src/db/tenant.js';
-import { at, authed, createCustomer, createService, createStaff, createTenant, createUserWithRole, futureDate, type Tenant } from './helpers.js';
+import { at, authed, bookingDate, createCustomer, createService, createStaff, createTenant, createUserWithRole, futureDate, type Tenant } from './helpers.js';
 
 let t: Tenant;
 let owner: ReturnType<typeof authed>;
@@ -322,7 +322,7 @@ describe('packages', () => {
 describe('billing from an appointment', () => {
   it('completes a running service, bills it with the quoted price and links the bill', async () => {
     const c = await createCustomer(t, 'Appointment Bill');
-    const date = futureDate(4);
+    const date = bookingDate(4);
     const booking = await owner.post('/appointments').send({ branchId: t.branchId, customerId: c, items: [{ serviceId: hairSpa, staffId: rahul, startAt: at(date, '11:00') }] });
     expect(booking.status).toBe(201);
     const id = booking.body.data.id as string;

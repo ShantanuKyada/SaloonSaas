@@ -28,8 +28,14 @@ test.describe('Walk-ins', () => {
     await cardOf(waiting, name, 'Assign team member').getByRole('button', { name: 'Assign team member' }).click();
     const assign = page.getByRole('dialog', { name: new RegExp(`Assign team member · ${name}`) });
     // "Free until 12:30 PM" is not enough for a service that runs past a booking, so only take someone who is free for good.
-    const free = await assign.getByRole('combobox').locator('option').filter({ hasText: /— Free$/ }).first().getAttribute('value');
-    test.skip(!free, 'Nobody is free to take the walk-in right now.');
+    // Wait until the team list and everyone's live status have loaded (each option then reads "Name — status"), and only
+    // then look for someone free: `getAttribute` on an option that never appears would wait out the whole test instead
+    // of skipping it (this timed out in CI when everyone who was free had a booking later that day).
+    const options = assign.getByRole('combobox').locator('option');
+    await expect(options.filter({ hasText: / — / }).first()).toBeAttached();
+    const freeForGood = options.filter({ hasText: /— Free$/ });
+    test.skip((await freeForGood.count()) === 0, 'Nobody is free for the rest of the day to take the walk-in right now.');
+    const free = await freeForGood.first().getAttribute('value');
     await assign.getByRole('combobox').selectOption(free!);
     await expect(assign.getByRole('switch', { name: 'Start right now' })).toBeChecked();
     await assign.getByRole('button', { name: 'Start now' }).click();

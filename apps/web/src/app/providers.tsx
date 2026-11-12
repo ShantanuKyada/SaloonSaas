@@ -40,7 +40,11 @@ export function Providers({ children }: { children: ReactNode }) {
       <AuthProvider>
         <ConfirmProvider>
           {children}
-          <Toaster position="bottom-right" richColors closeButton toastOptions={{ classNames: { toast: 'font-sans' } }} />
+          {/* Bottom left, not bottom right: toasts sit above drawers and dialogs (so "Undo" stays clickable), and every
+              drawer footer, dialog footer and sticky save bar puts its primary button at the bottom right. There a toast
+              covered the next step ("Start service" → "Complete service") and, because hovering pauses a toast, stayed
+              in the way for as long as the pointer rested where the person had just clicked. */}
+          <Toaster position="bottom-left" richColors closeButton toastOptions={{ classNames: { toast: 'font-sans' } }} />
         </ConfirmProvider>
       </AuthProvider>
     </QueryClientProvider>
