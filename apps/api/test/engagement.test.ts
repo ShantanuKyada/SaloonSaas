@@ -5,7 +5,7 @@ import { ConsoleProvider, ProviderError } from '../src/integrations/notification
 import { isPrivateAddress } from '../src/core/net.js';
 import { decideAttendance } from '../src/modules/attendance/service.js';
 import { dispatchDue } from '../src/modules/notifications/dispatcher.js';
-import { api, at, authed, createCustomer, createService, createStaff, createTenant, futureDate, type Tenant } from './helpers.js';
+import { api, at, authed, bookingDate, createCustomer, createService, createStaff, createTenant, futureDate, type Tenant } from './helpers.js';
 
 let t: Tenant;
 let owner: ReturnType<typeof authed>;
@@ -13,7 +13,7 @@ let hairSpa: string;
 let rahul: string;
 let priya: string;
 let meera: string;
-const date = futureDate(3);
+const date = bookingDate(3);
 
 const book = (customerId: string, staffId: string, time: string, extra: Record<string, unknown> = {}) =>
   owner.post('/appointments').send({ branchId: t.branchId, customerId, items: [{ serviceId: hairSpa, staffId, startAt: at(date, time) }], ...extra });

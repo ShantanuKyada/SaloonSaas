@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { withSystem } from '../src/db/tenant.js';
-import { api, at, authed, createCustomer, createService, createStaff, createTenant, futureDate, login, PASSWORD, type Tenant } from './helpers.js';
+import { api, at, authed, bookingDate, createCustomer, createService, createStaff, createTenant, login, PASSWORD, type Tenant } from './helpers.js';
 
 let t: Tenant;
 let owner: ReturnType<typeof authed>;
 let hairSpa: string;
-const date = futureDate(4);
+const date = bookingDate(4);
 
 beforeAll(async () => {
   t = await createTenant('pub');

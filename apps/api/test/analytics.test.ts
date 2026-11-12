@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DateTime } from 'luxon';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { REPORTS } from '../src/modules/reports/definitions.js';
-import { api, at, authed, createBranch, createCustomer, createService, createStaff, createTenant, createUserWithRole, futureDate, login, TZ, type Tenant } from './helpers.js';
+import { api, at, authed, bookingDate, createBranch, createCustomer, createService, createStaff, createTenant, createUserWithRole, futureDate, login, TZ, type Tenant } from './helpers.js';
 
 let t: Tenant;
 let owner: ReturnType<typeof authed>;
@@ -231,7 +231,7 @@ describe('staff home screen and privacy', () => {
     const staffUser = await createUserWithRole(t, 'staff', { name: 'Priya Login' });
     await owner.patch(`/users/${staffUser.id}`).send({ staffId: priya });
     const token = await login(staffUser.email);
-    const date = futureDate(2);
+    const date = bookingDate(2);
     const booked = await owner.post('/appointments').send({ branchId: t.branchId, customerId: meera, items: [{ serviceId: facial, staffId: priya, startAt: at(date, '11:00') }, ] });
     expect(booked.status).toBe(201);
     await owner.post('/appointments').send({ branchId: t.branchId, customerId: meera, items: [{ serviceId: hairSpa, staffId: rahul, startAt: at(date, '11:00') }] });

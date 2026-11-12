@@ -35,6 +35,9 @@ test.describe('Roles and permissions', () => {
 
   test('the API refuses another branch’s data to a branch user', async ({ page }) => {
     await signInAs(page, USERS.rajkotReception, '/desk');
+    // Let the app finish its own sign-in first. It refreshes the session as it starts, and refresh tokens rotate: a second
+    // refresh sent with the same cookie while the app's is still in flight is treated as token reuse and refused (401).
+    await expect(page.getByRole('heading', { name: /Good (morning|afternoon|evening)/ })).toBeVisible();
     const token = await page.evaluate(async () => {
       const r = await fetch('/api/v1/auth/refresh', { method: 'POST', headers: { 'X-Requested-With': 'salonos' }, credentials: 'include' });
       return (await r.json()).data.accessToken as string;
