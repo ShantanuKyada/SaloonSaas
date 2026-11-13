@@ -55,10 +55,26 @@ export const setRefreshHandler = (fn: (r: RefreshResult) => void) => {
   onRefreshed = fn;
 };
 
+// Renewals are taken one at a time across every tab of the browser. Tabs share the refresh cookie and each renewal
+// rotates it, so two tabs renewing at once (tabs restored on start-up, several links opened together) would send the
+// same cookie twice; the server treats a refresh token used twice as stolen, refuses it and ends every session of that
+// sign-in. Holding a Web Lock while renewing makes the next tab wait, then send the cookie the last renewal just set.
+const RENEWAL_LOCK = 'salonos-session-renewal';
+// Bounds how long one stuck renewal can keep the other tabs waiting.
+const RENEWAL_TIMEOUT_MS = 15_000;
+
+function oneTabAtATime<T>(task: () => Promise<T>): Promise<T> {
+  // Web Locks exist only in secure contexts (HTTPS, localhost); elsewhere renew directly, as before.
+  const locks: LockManager | undefined = typeof navigator === 'undefined' ? undefined : navigator.locks;
+  // request() resolves with what the task resolves with; its DOM typing does not unwrap the task's promise.
+  return locks ? (locks.request(RENEWAL_LOCK, task) as unknown as Promise<T>) : task();
+}
+
 export async function refreshSession(): Promise<boolean> {
-  refreshing ??= (async () => {
+  refreshing ??= oneTabAtATime(async () => {
     try {
-      const res = await fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'salonos' } });
+      const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(RENEWAL_TIMEOUT_MS) : undefined;
+      const res = await fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'salonos' }, signal });
       if (!res.ok) return false;
       const json = (await res.json()) as { data: RefreshResult };
       accessToken = json.data.accessToken;
@@ -66,10 +82,10 @@ export async function refreshSession(): Promise<boolean> {
       return true;
     } catch {
       return false;
-    } finally {
-      setTimeout(() => (refreshing = null), 0);
     }
-  })();
+  }).finally(() => {
+    setTimeout(() => (refreshing = null), 0);
+  });
   return refreshing;
 }
 
