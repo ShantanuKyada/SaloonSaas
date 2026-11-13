@@ -7,6 +7,11 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Node's type definitions must match the Node the app runs on (24: .nvmrc, CI, Dockerfiles). Move them together
+      # with the runtime, not ahead of it.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: docker
     directory: /deploy
     schedule: { interval: weekly }
