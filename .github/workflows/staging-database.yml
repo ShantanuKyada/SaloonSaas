@@ -1,0 +1,160 @@
+name: Hosted database (Supabase)
+
+# Prepares a hosted Supabase database for SalonOS: creates the salon_owner and salon_app roles, applies the
+# migrations and, if asked, loads the demo salon. Safe to run again: it only applies migrations that are new and
+# never loads demo data into a database that already has a salon. Run it from the Actions tab: "Run workflow".
+#
+# Configure each target as a GitHub environment (Settings > Environments), e.g. "staging":
+#   variables  SUPABASE_PROJECT_REF   the project's reference id (Project Settings > General)
+#              SUPABASE_POOLER_HOST   the pooler host, e.g. aws-0-ap-south-1.pooler.supabase.com
+#                                     (Connect > Session pooler)
+#   secrets    SUPABASE_DB_PASSWORD   the project's database password (role postgres); used only here, to create roles
+#              DB_OWNER_PASSWORD      password for salon_owner, which owns the tables and runs migrations
+#              DB_APP_PASSWORD        password for salon_app, which the app signs in as (row-level security applies)
+# See docs/DEPLOYMENT.md, "Supabase".
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub environment holding the target's settings
+        type: environment
+        default: staging
+      load_demo_data:
+        description: Load the demo salon (Glow Salon Group). Only into an empty database; never in production.
+        type: boolean
+        default: false
+
+concurrency:
+  group: hosted-database-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  # Configuration the scripts read. None of it is stored in the hosted database (the demo data holds no encrypted
+  # values), so throwaway values are fine here; the hosted app has its own.
+  NODE_ENV: development
+  JWT_ACCESS_SECRET: hosted-db-job-only-0123456789-0123456789-abcdef
+  PUBLIC_LINK_SECRET: hosted-db-job-only-0123456789-0123456789-abcd
+  DATA_ENCRYPTION_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+  NOTIFICATIONS_MODE: console
+  APP_BASE_URL: http://localhost:5173
+  API_BASE_URL: http://localhost:4000
+  CORS_ORIGINS: http://localhost:5173
+  DB_APP_ROLE: salon_app
+
+jobs:
+  database:
+    name: Roles, migrations${{ inputs.load_demo_data && ' and demo data' || '' }} (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 20
+    services:
+      # Used only to build the demo data, which is then copied across in one transfer: seeding the hosted database
+      # directly would take thousands of round trips and needs a superuser, which Supabase does not provide.
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - name: Connection settings
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_POOLER_HOST: ${{ vars.SUPABASE_POOLER_HOST }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          DB_OWNER_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
+          DB_APP_PASSWORD: ${{ secrets.DB_APP_PASSWORD }}
+        run: |
+          node --input-type=module <<'EOF'
+          import { appendFileSync } from 'node:fs';
+          const e = process.env;
+          const missing = ['SUPABASE_PROJECT_REF', 'SUPABASE_POOLER_HOST', 'SUPABASE_DB_PASSWORD', 'DB_OWNER_PASSWORD', 'DB_APP_PASSWORD'].filter((k) => !e[k]);
+          if (missing.length) {
+            console.log(`::error::Missing in the "${e.TARGET_ENVIRONMENT}" environment: ${missing.join(', ')} (see the comment at the top of this workflow)`);
+            process.exit(1);
+          }
+          if (!/^[a-z0-9]{20}$/.test(e.SUPABASE_PROJECT_REF)) { console.log('::error::SUPABASE_PROJECT_REF should be the 20-character project reference'); process.exit(1); }
+          // Session pooler (port 5432): the migration runner holds a session-level advisory lock. Certificates are
+          // verified against Supabase's root CA (NODE_EXTRA_CA_CERTS / PGSSLROOTCERT below).
+          const url = (role, password) =>
+            `postgres://${role}.${e.SUPABASE_PROJECT_REF}:${encodeURIComponent(password)}@${e.SUPABASE_POOLER_HOST}:5432/postgres?sslmode=verify-full`;
+          const out = {
+            HOSTED_ADMIN_URL: url('postgres', e.SUPABASE_DB_PASSWORD),
+            HOSTED_OWNER_URL: url('salon_owner', e.DB_OWNER_PASSWORD),
+            HOSTED_APP_URL: url('salon_app', e.DB_APP_PASSWORD),
+          };
+          for (const pw of [e.SUPABASE_DB_PASSWORD, e.DB_OWNER_PASSWORD, e.DB_APP_PASSWORD]) console.log(`::add-mask::${encodeURIComponent(pw)}`);
+          for (const value of Object.values(out)) console.log(`::add-mask::${value}`);
+          appendFileSync(e.GITHUB_ENV, Object.entries(out).map(([k, v]) => `${k}=${v}\n`).join(''));
+          EOF
+          cat /etc/ssl/certs/ca-certificates.crt deploy/supabase/prod-ca-2021.crt > "$RUNNER_TEMP/db-roots.pem"
+          echo "NODE_EXTRA_CA_CERTS=$GITHUB_WORKSPACE/deploy/supabase/prod-ca-2021.crt" >> "$GITHUB_ENV"
+          echo "PGSSLROOTCERT=$RUNNER_TEMP/db-roots.pem" >> "$GITHUB_ENV"
+
+      - name: Create roles and grant access
+        env:
+          DATABASE_SUPERUSER_URL: ${{ env.HOSTED_ADMIN_URL }}
+          DATABASE_MIGRATION_URL: ${{ env.HOSTED_OWNER_URL }}
+          DATABASE_URL: ${{ env.HOSTED_APP_URL }}
+        run: npm run db:setup
+
+      - name: Apply migrations
+        env:
+          DATABASE_MIGRATION_URL: ${{ env.HOSTED_OWNER_URL }}
+          DATABASE_URL: ${{ env.HOSTED_APP_URL }}
+        run: npm run db:migrate
+
+      - name: Build the demo salon on the runner
+        if: inputs.load_demo_data
+        env:
+          DATABASE_SUPERUSER_URL: postgres://postgres:postgres@localhost:5432/postgres
+          DATABASE_MIGRATION_URL: postgres://salon_owner:runner-owner@localhost:5432/salon_dev
+          DATABASE_URL: postgres://salon_app:runner-app@localhost:5432/salon_dev
+        run: |
+          if [ "${{ inputs.environment }}" = "production" ]; then echo "::error::Demo data is never loaded into production."; exit 1; fi
+          npm run db:setup
+          npm run db:migrate
+          npm run db:seed
+
+      - name: Copy the demo salon into the hosted database
+        if: inputs.load_demo_data
+        run: |
+          docker exec "${{ job.services.postgres.id }}" pg_dump -U postgres --data-only --no-owner --no-privileges \
+            --exclude-table=public.schema_migrations --exclude-table=public.permissions salon_dev > "$RUNNER_TEMP/demo-data.sql"
+          deploy/scripts/load-data.sh "$HOSTED_OWNER_URL" "$RUNNER_TEMP/demo-data.sql"
+
+      - name: Check the hosted database
+        run: |
+          psql "$HOSTED_OWNER_URL" -X -v ON_ERROR_STOP=1 -tA -F ' | ' > "$RUNNER_TEMP/check.txt" <<'SQL'
+          select 'Migrations applied', count(*)::text from schema_migrations
+          union all select 'Tables', count(*)::text from pg_tables where schemaname = 'public'
+          union all select 'Tables with row-level security', count(*)::text from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity
+          union all select 'App role can sign in', (select rolcanlogin::text from pg_roles where rolname = 'salon_app')
+          union all select 'Salons', count(*)::text from organizations
+          union all select 'Customers', count(*)::text from customers
+          union all select 'Customers whose balance differs from the ledger', count(*)::text from customers c
+            left join (select customer_id, sum(debit - credit) as net from ledger_entries group by customer_id) l on l.customer_id = c.id
+            left join customer_accounts ca on ca.customer_id = c.id where coalesce(l.net, 0) <> coalesce(ca.balance, 0);
+          SQL
+          { echo "### Hosted database (${{ inputs.environment }})"; echo; echo "| Check | Value |"; echo "| --- | --- |"; sed 's/^/| /; s/$/ |/' "$RUNNER_TEMP/check.txt"; } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/check.txt"
+          if ! grep -q '^Customers whose balance differs from the ledger | 0$' "$RUNNER_TEMP/check.txt"; then
+            echo "::error::Customer balances do not reconcile with the ledger"; exit 1
+          fi

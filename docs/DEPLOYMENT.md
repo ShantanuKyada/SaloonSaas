@@ -126,6 +126,57 @@ create extension if not exists pg_trgm;
 The migration runner then grants `salon_app` exactly the privileges it needs and revokes update/delete on the ledger and
 audit tables. **Do not run the API as `salon_owner`**: the owner bypasses row-level security.
 
+`npm run db:setup` also works against a managed platform's admin role and existing database (for example Supabase's
+`postgres` role and `postgres` database, which can create roles but are not a superuser): it creates both roles, keeps
+their passwords in sync with the URLs, installs the extensions and grants `salon_owner` what it needs to create the
+schema, leaving the database owned by the platform.
+
+### Supabase
+
+The workflow **Hosted database (Supabase)** (`.github/workflows/staging-database.yml`, run from the Actions tab) does the
+whole set-up from GitHub: roles, migrations and, for a staging project, the demo salon. It is safe to run again; it only
+applies new migrations and refuses to load demo data into a database that already has a salon.
+
+1. **Create the project** in the Supabase dashboard, in the region closest to the salons (South Asia, Mumbai, for India).
+   Keep the generated database password in a password manager. If offered, choose *Only connection string*: the app
+   does not use Supabase's Data API, so it should not be exposed (or switch it off later under Project Settings > Data
+   API).
+2. **Create a GitHub environment** (Settings > Environments > New environment), e.g. `staging`, and add:
+
+   | Kind | Name | Value |
+   | --- | --- | --- |
+   | Variable | `SUPABASE_PROJECT_REF` | The project's reference id (Project Settings > General) |
+   | Variable | `SUPABASE_POOLER_HOST` | The pooler host from *Connect > Session pooler*, e.g. `aws-0-ap-south-1.pooler.supabase.com` |
+   | Secret | `SUPABASE_DB_PASSWORD` | The project's database password from step 1 (role `postgres`); only this workflow uses it |
+   | Secret | `DB_OWNER_PASSWORD` | A new long random password for `salon_owner` |
+   | Secret | `DB_APP_PASSWORD` | A new long random password for `salon_app` |
+
+   Generate the two new passwords with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`.
+3. **Run the workflow**: Actions > Hosted database (Supabase) > Run workflow, choose the environment, and tick *Load the
+   demo salon* for a staging project. The run summary lists the migrations, tables with row-level security, salons and
+   the ledger reconciliation.
+
+Why it works the way it does:
+
+- **Connections go through Supabase's pooler**, which signs a role in as `<role>.<project-ref>` (for example
+  `salon_owner.abcdefghijklmnopqrst`); the scripts read the role name without the suffix. The direct `db.<ref>.supabase.co`
+  host is IPv6-only unless you buy the IPv4 add-on.
+- **Migrations use the session pooler (port 5432)**: the runner holds a session-level advisory lock. The API and worker
+  keep all their settings and locks transaction-local, so at run time they can use either the session pooler or the
+  transaction pooler (port 6543), which shares connections better.
+- **Certificates are verified**: `sslmode=verify-full` in the URL, with Supabase's root certificate
+  (`deploy/supabase/prod-ca-2021.crt`, *Supabase Root 2021 CA*, valid to 2031, SHA-256
+  `80:70:25:AD:50:D4:ED:21:9D:2C:9C:7D:29:9C:00:4F:82:4E:B0:0C:F7:F6:5A:FE:F6:07:D0:7B:72:E6:CA:FA`) added to Node's trust
+  store with `NODE_EXTRA_CA_CERTS`, and to libpq tools with `PGSSLROOTCERT`.
+- **The demo salon is built on the runner and copied across** (`deploy/scripts/load-data.sh`): the seed needs a superuser
+  (Supabase's `postgres` is not one) and thousands of round trips, while the copy is one transaction of bulk loads. It
+  runs as `salon_owner`, pauses the tables' own triggers so balances are not counted twice, and re-creates (and so
+  re-checks) every foreign key before committing. The demo accounts use the password `Welcome@2026`: staging only.
+- **Running the app against Supabase**: set `DATABASE_URL` to `salon_app.<ref>` on the pooler with `sslmode=verify-full`,
+  `DATABASE_MIGRATION_URL` to `salon_owner.<ref>` on the session pooler, `DB_SSL=true`, and
+  `NODE_EXTRA_CA_CERTS=deploy/supabase/prod-ca-2021.crt` (or the path where your image keeps it). Keep `DB_POOL_MAX`
+  small (5 or so): the pooler, not each process, should hold most connections.
+
 ## 6. Upgrades and migrations
 
 ```bash
