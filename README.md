@@ -24,6 +24,20 @@ an append-only ledger whose balances can always be re-derived, an audit trail, o
 | Tests | Vitest + Supertest (API), Playwright + axe-core (browser, accessibility, mobile) |
 | Ops | Docker images, nginx, compose stack, backup/restore scripts, GitHub Actions |
 
+## Try it in your browser (GitHub Codespaces)
+
+Runs SalonOS against the staging database on Supabase, with nothing to install:
+
+1. Once: add the staging app password as a Codespaces secret at
+   [github.com/settings/codespaces](https://github.com/settings/codespaces): *New secret*, name `DB_APP_PASSWORD` (the
+   `salon_app` password, as in the GitHub environment `staging`), repository access *ShantanuKyada/SaloonSaas*.
+2. On the repository page: **Code → Codespaces → Create codespace on main**.
+3. Wait for the set-up (a few minutes the first time). SalonOS starts by itself and opens in a new tab; sign in as
+   `owner@glow.test` / `Welcome@2026`. If the tab does not open: *Ports* tab, globe icon next to *SalonOS*.
+
+The codespace stops when idle; reopening it from **Code → Codespaces** restarts the app. Configuration:
+`.devcontainer/`.
+
 ## Quick start (development)
 
 Prerequisites: Node 24+, PostgreSQL 17 with a superuser you can use locally.
