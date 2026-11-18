@@ -1,0 +1,33 @@
+// SalonOS in a GitHub Codespace, against the staging database on Supabase. Nothing to install: open the repository on
+// GitHub > Code > Codespaces > Create codespace. See README.md, "Try it in your browser".
+{
+  "name": "SalonOS (staging database on Supabase)",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:24-bookworm",
+
+  // Asked for when the codespace is created, then kept as your Codespaces secret for this repository.
+  "secrets": {
+    "DB_APP_PASSWORD": {
+      "description": "Password of the salon_app role on the staging Supabase database: the DB_APP_PASSWORD secret of the GitHub environment 'staging'.",
+      "documentationUrl": "https://github.com/ShantanuKyada/SaloonSaas/blob/main/docs/DEPLOYMENT.md#supabase"
+    }
+  },
+
+  "containerEnv": {
+    // Which Supabase project and pooler to use (not secrets).
+    "SUPABASE_PROJECT_REF": "thkukmofpyjpzwfnwjhz",
+    "SUPABASE_POOLER_HOST": "aws-0-ap-northeast-1.pooler.supabase.com",
+    // Node verifies Supabase's certificate against its root CA, kept in the repository.
+    "NODE_EXTRA_CA_CERTS": "${containerWorkspaceFolder}/deploy/supabase/prod-ca-2021.crt",
+    // The browser reaches the dev server as <codespace>-5173.app.github.dev, which Vite blocks unless allowed.
+    "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS": ".app.github.dev"
+  },
+
+  "postCreateCommand": "npm ci",
+  "postAttachCommand": "bash .devcontainer/start.sh",
+
+  "forwardPorts": [5173],
+  "portsAttributes": {
+    "5173": { "label": "SalonOS", "onAutoForward": "openBrowser" },
+    "4000": { "label": "SalonOS API", "onAutoForward": "silent" }
+  }
+}

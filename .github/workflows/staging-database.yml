@@ -99,6 +99,8 @@ jobs:
             HOSTED_ADMIN_URL: url('postgres', e.SUPABASE_DB_PASSWORD),
             HOSTED_OWNER_URL: url('salon_owner', e.DB_OWNER_PASSWORD),
             HOSTED_APP_URL: url('salon_app', e.DB_APP_PASSWORD),
+            // What the running app uses: the transaction pooler (port 6543), which shares server connections best.
+            HOSTED_APP_RUNTIME_URL: url('salon_app', e.DB_APP_PASSWORD).replace(':5432/', ':6543/'),
           };
           for (const pw of [e.SUPABASE_DB_PASSWORD, e.DB_OWNER_PASSWORD, e.DB_APP_PASSWORD]) console.log(`::add-mask::${encodeURIComponent(pw)}`);
           for (const value of Object.values(out)) console.log(`::add-mask::${value}`);
@@ -114,6 +116,20 @@ jobs:
           DATABASE_MIGRATION_URL: ${{ env.HOSTED_OWNER_URL }}
           DATABASE_URL: ${{ env.HOSTED_APP_URL }}
         run: npm run db:setup
+
+      - name: Wait until both roles can sign in through the pooler
+        # Supabase's pooler caches credentials: right after a password changes it refuses the new (correct) password
+        # for a short while. Retry a few times, spaced out (rapid failures get the runner's address blocked briefly).
+        run: |
+          for role_url in "$HOSTED_OWNER_URL" "$HOSTED_APP_URL"; do
+            for attempt in 1 2 3 4 5 6 7 8 9; do
+              if psql "$role_url" -X -tAc 'select current_user' > /dev/null 2> "$RUNNER_TEMP/sign-in.err"; then break; fi
+              if [ "$attempt" = 9 ]; then echo "::error::$(tail -n1 "$RUNNER_TEMP/sign-in.err")"; exit 1; fi
+              echo "Sign-in refused (attempt $attempt of 9); waiting for the pooler to pick up the password"
+              sleep 20
+            done
+          done
+          echo "salon_owner and salon_app both sign in through the pooler"
 
       - name: Apply migrations
         env:
@@ -158,3 +174,32 @@ jobs:
           if ! grep -q '^Customers whose balance differs from the ledger | 0$' "$RUNNER_TEMP/check.txt"; then
             echo "::error::Customer balances do not reconcile with the ledger"; exit 1
           fi
+
+      - name: Run the app against the hosted database
+        env:
+          # Exactly what a hosted or local app uses: the app role, the transaction pooler, verified TLS.
+          DATABASE_URL: ${{ env.HOSTED_APP_RUNTIME_URL }}
+          DB_SSL: "true"
+          DB_POOL_MAX: "3"
+        run: |
+          npx tsx --conditions=@salon/source apps/api/src/server.ts > "$RUNNER_TEMP/api.log" 2>&1 &
+          api=$!
+          trap 'kill "$api" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do curl -sf -o /dev/null localhost:4000/health && break; sleep 1; done
+          fail() { echo "::error::$1"; tail -n 40 "$RUNNER_TEMP/api.log"; exit 1; }
+          [ "$(curl -s -o /dev/null -w '%{http_code}' localhost:4000/ready)" = 200 ] || fail "The API cannot query the hosted database as salon_app"
+          echo "API is ready: it queries the hosted database as salon_app through the transaction pooler"
+          login=$(curl -s -w '\n%{http_code}' -X POST localhost:4000/api/v1/auth/login -H 'Content-Type: application/json' \
+            -H 'X-Requested-With: salonos' -d '{"identifier":"owner@glow.test","password":"Welcome@2026"}')
+          if [ "$(tail -n1 <<<"$login")" != 200 ]; then
+            echo "No demo owner to sign in as (no demo data); skipped the sign-in check"
+            echo "| App ready against this database | yes |" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          token=$(head -n1 <<<"$login" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.accessToken')
+          dashboard=$(curl -s -w '\n%{http_code}' "localhost:4000/api/v1/dashboard/owner?from=$(date -u +%Y-%m-01)&to=$(date -u +%F)" \
+            -H "Authorization: Bearer $token" -H 'X-Requested-With: salonos')
+          [ "$(tail -n1 <<<"$dashboard")" = 200 ] || fail "Signed in, but the owner dashboard failed"
+          branches=$(head -n1 <<<"$dashboard" | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.branches.length')
+          echo "Signed in as the demo owner; the owner dashboard covers $branches branches"
+          echo "| App ready against this database | yes; demo owner signed in, dashboard covers $branches branches |" >> "$GITHUB_STEP_SUMMARY"
