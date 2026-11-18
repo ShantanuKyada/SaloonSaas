@@ -1,8 +1,21 @@
 import pg from 'pg';
 import { env } from '../config/env.js';
+import { parseConnectionUrl } from './connection-info.js';
 
-// Local/dev bootstrap: creates the owner (migration) role, the runtime role subject to RLS, and the databases.
-// Production databases are provisioned by infrastructure code; see docs/DEPLOYMENT.md.
+// Bootstrap: creates the owner (migration) role and the runtime role that row-level security applies to, and gives
+// the owner a database to migrate into. Run it with an administrator connection (DATABASE_SUPERUSER_URL):
+//
+// - Local/dev: a real superuser. Missing databases are created, owned by the owner role.
+// - Managed PostgreSQL such as Supabase: the platform's admin role (Supabase's `postgres` can create roles but is
+//   not a superuser) and the platform's existing database. That database stays owned by the platform; the owner role
+//   is granted what migrations need (connect, create, and create on schema public).
+//
+// Safe to run repeatedly. Role passwords are set from the URLs every time, so rotating a password is: change the
+// secret, run this again.
+
+// Extensions the migrations need (see 0001_foundation.sql). On a managed database the admin role installs them, into
+// schema public like the migrations would, because platforms may restrict who can create extensions.
+const REQUIRED_EXTENSIONS = ['citext', 'btree_gist', 'pg_trgm'];
 
 interface Target {
   database: string;
@@ -10,11 +23,6 @@ interface Target {
   ownerPassword: string;
   appRole: string;
   appPassword: string;
-}
-
-function parse(url: string) {
-  const u = new URL(url);
-  return { user: decodeURIComponent(u.username), password: decodeURIComponent(u.password), database: u.pathname.slice(1) };
 }
 
 function ident(name: string): string {
@@ -31,14 +39,38 @@ async function ensureRole(client: pg.Client, role: string, password: string): Pr
   if (rowCount === 0) {
     await client.query(`create role ${ident(role)} login password ${literal(password)} nosuperuser nocreatedb nocreaterole`);
     console.log(`Created role ${role}`);
+  } else {
+    await client.query(`alter role ${ident(role)} login password ${literal(password)}`);
   }
 }
 
+/** The admin URL pointed at another database on the same server. */
+function adminUrlFor(database: string): string {
+  const url = new URL(env.DATABASE_SUPERUSER_URL!);
+  url.pathname = `/${encodeURIComponent(database)}`;
+  return url.toString();
+}
+
 async function ensureDatabase(client: pg.Client, target: Target): Promise<void> {
-  const { rowCount } = await client.query('select 1 from pg_database where datname = $1', [target.database]);
-  if (rowCount === 0) {
+  const { rows } = await client.query<{ owner: string }>(
+    'select pg_get_userbyid(datdba) as owner from pg_database where datname = $1',
+    [target.database],
+  );
+  if (rows.length === 0) {
     await client.query(`create database ${ident(target.database)} owner ${ident(target.ownerRole)} encoding 'UTF8' template template0`);
     console.log(`Created database ${target.database}`);
+  } else if (rows[0]!.owner !== target.ownerRole) {
+    // An existing database we do not own (a managed platform's). Let the owner role create the schema in it.
+    await client.query(`grant connect, create, temporary on database ${ident(target.database)} to ${ident(target.ownerRole)}`);
+    const db = new pg.Client({ connectionString: adminUrlFor(target.database) });
+    await db.connect();
+    try {
+      await db.query(`grant usage, create on schema public to ${ident(target.ownerRole)}`);
+      for (const extension of REQUIRED_EXTENSIONS) await db.query(`create extension if not exists ${ident(extension)} with schema public`);
+    } finally {
+      await db.end();
+    }
+    console.log(`Using existing database ${target.database} (owned by ${rows[0]!.owner}); ${target.ownerRole} may create the schema in it`);
   }
   await client.query(`grant connect on database ${ident(target.database)} to ${ident(target.appRole)}`);
 }
@@ -47,13 +79,16 @@ async function main(): Promise<void> {
   if (!env.DATABASE_SUPERUSER_URL) {
     throw new Error('DATABASE_SUPERUSER_URL is required for db:setup');
   }
-  const app = parse(env.DATABASE_URL);
-  const owner = parse(env.DATABASE_MIGRATION_URL ?? env.DATABASE_URL);
+  const app = parseConnectionUrl(env.DATABASE_URL);
+  const owner = parseConnectionUrl(env.DATABASE_MIGRATION_URL ?? env.DATABASE_URL);
+  if (app.role !== env.DB_APP_ROLE) {
+    throw new Error(`DATABASE_URL signs in as ${app.role}, but DB_APP_ROLE is ${env.DB_APP_ROLE}; they must name the same role`);
+  }
   const targets: Target[] = [
-    { database: app.database, ownerRole: owner.user, ownerPassword: owner.password, appRole: app.user, appPassword: app.password },
+    { database: app.database, ownerRole: owner.role, ownerPassword: owner.password, appRole: app.role, appPassword: app.password },
   ];
   if (process.env.TEST_DATABASE_URL) {
-    const testApp = parse(process.env.TEST_DATABASE_URL);
+    const testApp = parseConnectionUrl(process.env.TEST_DATABASE_URL);
     targets.push({ ...targets[0]!, database: testApp.database });
   }
 
