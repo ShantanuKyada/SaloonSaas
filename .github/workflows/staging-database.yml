@@ -117,6 +117,20 @@ jobs:
           DATABASE_URL: ${{ env.HOSTED_APP_URL }}
         run: npm run db:setup
 
+      - name: Wait until both roles can sign in through the pooler
+        # Supabase's pooler caches credentials: right after a password changes it refuses the new (correct) password
+        # for a short while. Retry a few times, spaced out (rapid failures get the runner's address blocked briefly).
+        run: |
+          for role_url in "$HOSTED_OWNER_URL" "$HOSTED_APP_URL"; do
+            for attempt in 1 2 3 4 5 6 7 8 9; do
+              if psql "$role_url" -X -tAc 'select current_user' > /dev/null 2> "$RUNNER_TEMP/sign-in.err"; then break; fi
+              if [ "$attempt" = 9 ]; then echo "::error::$(tail -n1 "$RUNNER_TEMP/sign-in.err")"; exit 1; fi
+              echo "Sign-in refused (attempt $attempt of 9); waiting for the pooler to pick up the password"
+              sleep 20
+            done
+          done
+          echo "salon_owner and salon_app both sign in through the pooler"
+
       - name: Apply migrations
         env:
           DATABASE_MIGRATION_URL: ${{ env.HOSTED_OWNER_URL }}

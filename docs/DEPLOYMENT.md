@@ -172,6 +172,10 @@ Why it works the way it does:
   (Supabase's `postgres` is not one) and thousands of round trips, while the copy is one transaction of bulk loads. It
   runs as `salon_owner`, pauses the tables' own triggers so balances are not counted twice, and re-creates (and so
   re-checks) every foreign key before committing. The demo accounts use the password `Welcome@2026`: staging only.
+- **Changing a role's password**: update the secret and run the workflow again; `db:setup` sets the password of any role
+  that can no longer sign in, and leaves working passwords alone. Supabase's shared pooler caches credentials, so for
+  a minute or two after a change it can still refuse the new password; the workflow waits for that, and running apps
+  should be restarted with the new password once it is accepted.
 - **Running the app against Supabase**: set `DATABASE_URL` to `salon_app.<ref>` on the pooler with `sslmode=verify-full`,
   `DATABASE_MIGRATION_URL` to `salon_owner.<ref>` on the session pooler, `DB_SSL=true`, and
   `NODE_EXTRA_CA_CERTS=deploy/supabase/prod-ca-2021.crt` (or the path where your image keeps it). Keep `DB_POOL_MAX`

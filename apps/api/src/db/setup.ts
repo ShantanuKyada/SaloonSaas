@@ -10,8 +10,10 @@ import { parseConnectionUrl } from './connection-info.js';
 //   not a superuser) and the platform's existing database. That database stays owned by the platform; the owner role
 //   is granted what migrations need (connect, create, and create on schema public).
 //
-// Safe to run repeatedly. Role passwords are set from the URLs every time, so rotating a password is: change the
-// secret, run this again.
+// Safe to run repeatedly. A role that cannot sign in with the password in its URL gets that password, so rotating a
+// password is: change the secret, run this again. Passwords that still work are left alone: setting one again, even to
+// the same value, gives it a new SCRAM salt, and poolers that cache credentials (Supabase's) then refuse correct
+// sign-ins for a while.
 
 // Extensions the migrations need (see 0001_foundation.sql). On a managed database the admin role installs them, into
 // schema public like the migrations would, because platforms may restrict who can create extensions.
@@ -20,9 +22,7 @@ const REQUIRED_EXTENSIONS = ['citext', 'btree_gist', 'pg_trgm'];
 interface Target {
   database: string;
   ownerRole: string;
-  ownerPassword: string;
   appRole: string;
-  appPassword: string;
 }
 
 function ident(name: string): string {
@@ -34,13 +34,27 @@ function literal(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-async function ensureRole(client: pg.Client, role: string, password: string): Promise<void> {
+/** Whether `url` signs in, i.e. its role already has that password (and may connect). */
+async function canSignIn(url: string): Promise<boolean> {
+  const probe = new pg.Client({ connectionString: url, connectionTimeoutMillis: 15_000 });
+  try {
+    await probe.connect();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await probe.end().catch(() => undefined);
+  }
+}
+
+async function ensureRole(client: pg.Client, role: string, password: string, url: string): Promise<void> {
   const { rowCount } = await client.query('select 1 from pg_roles where rolname = $1', [role]);
   if (rowCount === 0) {
     await client.query(`create role ${ident(role)} login password ${literal(password)} nosuperuser nocreatedb nocreaterole`);
     console.log(`Created role ${role}`);
-  } else {
+  } else if (!(await canSignIn(url))) {
     await client.query(`alter role ${ident(role)} login password ${literal(password)}`);
+    console.log(`Set the password of ${role} from its URL`);
   }
 }
 
@@ -85,7 +99,7 @@ async function main(): Promise<void> {
     throw new Error(`DATABASE_URL signs in as ${app.role}, but DB_APP_ROLE is ${env.DB_APP_ROLE}; they must name the same role`);
   }
   const targets: Target[] = [
-    { database: app.database, ownerRole: owner.role, ownerPassword: owner.password, appRole: app.role, appPassword: app.password },
+    { database: app.database, ownerRole: owner.role, appRole: app.role },
   ];
   if (process.env.TEST_DATABASE_URL) {
     const testApp = parseConnectionUrl(process.env.TEST_DATABASE_URL);
@@ -95,11 +109,10 @@ async function main(): Promise<void> {
   const client = new pg.Client({ connectionString: env.DATABASE_SUPERUSER_URL });
   await client.connect();
   try {
-    for (const target of targets) {
-      await ensureRole(client, target.ownerRole, target.ownerPassword);
-      await ensureRole(client, target.appRole, target.appPassword);
-      await ensureDatabase(client, target);
-    }
+    // Roles belong to the whole server, so once is enough for every target database.
+    await ensureRole(client, owner.role, owner.password, env.DATABASE_MIGRATION_URL ?? env.DATABASE_URL);
+    await ensureRole(client, app.role, app.password, env.DATABASE_URL);
+    for (const target of targets) await ensureDatabase(client, target);
   } finally {
     await client.end();
   }
