@@ -181,6 +181,32 @@ Why it works the way it does:
   `NODE_EXTRA_CA_CERTS=deploy/supabase/prod-ca-2021.crt` (or the path where your image keeps it). Keep `DB_POOL_MAX`
   small (5 or so): the pooler, not each process, should hold most connections.
 
+### One service on a platform host (Render)
+
+Hosts such as Render or Cloud Run run one process per service. The API can serve the built web app from its own
+address (`WEB_DIST_DIR`) and run the background worker inside the same process (`RUN_WORKER=true`), so a single service
+is the whole of SalonOS, and pages and API share one origin (the refresh cookie is `SameSite=Strict`).
+
+| Setting | Value |
+| --- | --- |
+| Build command | `npm ci --include=dev && npm run build` |
+| Start command | `node apps/api/dist/server.js` |
+| Health check path | `/health` |
+| `NODE_ENV` | `production` |
+| `WEB_DIST_DIR`, `RUN_WORKER` | `apps/web/dist`, `true` |
+| `DATABASE_URL` | `postgres://salon_app.<ref>@<pooler host>:6543/postgres?sslmode=verify-full`, **without** a password |
+| `PGPASSWORD` | the `salon_app` password, as a secret (node-postgres uses it when the URL has none) |
+| `NODE_EXTRA_CA_CERTS` | the absolute path of `deploy/supabase/prod-ca-2021.crt` in the checkout |
+| `DB_SSL`, `DB_POOL_MAX` | `true`, `5` |
+| `JWT_ACCESS_SECRET`, `PUBLIC_LINK_SECRET`, `METRICS_TOKEN` | long random values (the host can generate them) |
+| `DATA_ENCRYPTION_KEY` | 32 random bytes, base64; keep it forever (it protects saved integration secrets) |
+| `APP_BASE_URL`, `API_BASE_URL`, `CORS_ORIGINS` | the service's public `https://` address |
+| `NOTIFICATIONS_MODE` | `disabled` for a staging site, `live` once providers are configured |
+| `TRUST_PROXY` | the number of proxies in front of the app (1 on Render) |
+
+Migrations are not run on deploy: apply them with the database workflow (above) before deploying code that needs them.
+The service only holds the `salon_app` password, which cannot change the schema.
+
 ## 6. Upgrades and migrations
 
 ```bash

@@ -2,13 +2,16 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { logger } from './core/logger.js';
 import { closeDb, pool } from './db/pool.js';
+import { startWorker } from './jobs/runner.js';
 
 pool.on('error', (error) => logger.error({ err: error }, 'idle database client error'));
 
 const app = createApp();
 const server = app.listen(env.PORT, () => {
-  logger.info({ port: env.PORT, env: env.NODE_ENV }, 'API listening');
+  logger.info({ port: env.PORT, env: env.NODE_ENV, webApp: Boolean(env.WEB_DIST_DIR), worker: env.RUN_WORKER }, 'API listening');
 });
+// Single-service hosting: the background work runs here too instead of in a separate worker process.
+const worker = env.RUN_WORKER ? startWorker() : null;
 server.keepAliveTimeout = 65_000;
 server.headersTimeout = 66_000;
 
@@ -19,7 +22,9 @@ async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, 'shutting down');
   const force = setTimeout(() => process.exit(1), 15_000);
   force.unref();
+  const stoppingWorker = worker?.stop();
   server.close(async () => {
+    await stoppingWorker;
     await closeDb().catch(() => undefined);
     process.exit(0);
   });
