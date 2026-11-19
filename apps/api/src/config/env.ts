@@ -63,6 +63,11 @@ const schema = z
     /** Multiplies every rate limit (end-to-end and load tests only; must stay 1 in production). */
     RATE_LIMIT_MULTIPLIER: z.coerce.number().int().min(1).max(1000).default(1),
 
+    /** Serve the built web app from this directory (e.g. apps/web/dist) on the API's address: one service, one origin. */
+    WEB_DIST_DIR: z.string().min(1).optional(),
+    /** Also run the background worker inside the API process (single-service hosting). */
+    RUN_WORKER: bool.default(false),
+
     WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(200).default(2000),
     WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(25),
     WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(5),

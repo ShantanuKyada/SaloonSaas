@@ -135,6 +135,12 @@ async function deliver(id: string): Promise<'sent' | 'retried' | 'failed' | 'ski
     await markOutcome(id, { kind: 'skip', reason: skip });
     return 'skipped';
   }
+  // A staging or demo environment with messaging switched off records messages as skipped: nothing failed, so they
+  // must not show up as delivery failures (dashboard alerts, the failed-messages log).
+  if (env.NOTIFICATIONS_MODE === 'disabled') {
+    await markOutcome(id, { kind: 'skip', reason: 'Messaging is switched off for this environment.' });
+    return 'skipped';
+  }
 
   const channel = n.channel as NotificationChannel;
   let outcome: Outcome;

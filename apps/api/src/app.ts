@@ -15,6 +15,7 @@ import { db } from './db/pool.js';
 import { sql } from 'kysely';
 import { apiRouter } from './modules/index.js';
 import { buildOpenApiDocument } from './openapi/document.js';
+import { serveWebApp } from './web.js';
 
 type RequestWithId = Request & { requestId: string };
 
@@ -45,7 +46,7 @@ export function createApp() {
         req: (req: { method: string; url: string }) => ({ method: req.method, url: req.url.split('?')[0] }),
         res: (res: { statusCode: number }) => ({ statusCode: res.statusCode }),
       },
-      autoLogging: { ignore: (req) => req.url === '/health' || req.url === '/ready' || req.url === '/metrics' },
+      autoLogging: { ignore: (req) => req.url === '/health' || req.url === '/ready' || req.url === '/metrics' || !!req.url?.startsWith('/assets/') },
     }),
   );
 
@@ -56,7 +57,8 @@ export function createApp() {
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
-          imgSrc: ["'self'", 'data:'],
+          // https: as for the web app behind nginx (deploy/nginx/security-headers.conf): photos may be external links.
+          imgSrc: ["'self'", 'data:', 'https:'],
           frameAncestors: ["'none'"],
         },
       },
@@ -138,6 +140,8 @@ app.use(express.json({ limit: '1mb', verify: (req, _res, buf) => { (req as unkno
     handler: (_req, _res, next) => next(new AppError(429, 'RATE_LIMITED', 'Too many requests. Please slow down and try again.')),
   });
   app.use('/api/v1', apiLimiter, apiRouter);
+
+  if (env.WEB_DIST_DIR) serveWebApp(app, env.WEB_DIST_DIR);
 
   app.use((req, _res, next) => {
     next(new AppError(404, 'NOT_FOUND', `No endpoint ${req.method} ${req.path}`));
