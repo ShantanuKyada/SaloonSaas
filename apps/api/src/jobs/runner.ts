@@ -15,6 +15,18 @@ export interface Worker {
   stop(): Promise<void>;
 }
 
+/** Longest pause between rounds while the database keeps failing. */
+const MAX_BACKOFF_MS = 60_000;
+
+/**
+ * How long the dispatcher waits before its next round: the poll interval normally, doubling after each failed round in
+ * a row up to a minute. When the database refuses connections (a wrong password, an outage), retrying every couple of
+ * seconds only adds load, and poolers such as Supabase's block an address that keeps failing to sign in.
+ */
+export function pauseAfter(failures: number, pollMs = env.WORKER_POLL_INTERVAL_MS): number {
+  return failures === 0 ? pollMs : Math.min(pollMs * 2 ** failures, MAX_BACKOFF_MS);
+}
+
 export function startWorker(): Worker {
   let running = true;
   const lastRun = new Map<string, number>();
@@ -60,15 +72,18 @@ export function startWorker(): Worker {
   }
 
   async function dispatcherLoop(): Promise<void> {
+    let failures = 0;
     while (running) {
       try {
         const stats = await dispatchDue();
+        failures = 0;
         if (stats.claimed > 0) logger.info(stats, 'notifications dispatched');
         if (stats.claimed >= env.WORKER_BATCH_SIZE) continue; // more waiting: go again straight away
       } catch (error) {
-        logger.error({ err: error }, 'dispatcher loop error');
+        failures += 1;
+        logger.error({ err: error, failures }, 'dispatcher loop error');
       }
-      await new Promise((r) => setTimeout(r, env.WORKER_POLL_INTERVAL_MS));
+      await new Promise((r) => setTimeout(r, pauseAfter(failures)));
     }
   }
 

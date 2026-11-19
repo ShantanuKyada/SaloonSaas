@@ -1,5 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { env } from '../src/config/env.js';
 import { withSystem } from '../src/db/tenant.js';
 import { ConsoleProvider, ProviderError } from '../src/integrations/notifications/providers.js';
 import { isPrivateAddress } from '../src/core/net.js';
@@ -139,6 +140,26 @@ describe('notification failures never break the business', () => {
     expect(failed).toMatchObject({ status: 'failed', attempts: 1 });
     const log = await owner.get('/notifications?status=failed');
     expect(log.body.data.some((n: { id: string }) => n.id === failed.id)).toBe(true);
+  });
+
+  it('records messages as skipped, not failed, when messaging is switched off', async () => {
+    const send = vi.spyOn(ConsoleProvider.prototype, 'send');
+    const res = await book(meera, priya, '10:30');
+    await withSystem((tx) => tx.updateTable('notifications').set({ status: 'cancelled' }).where('status', '=', 'queued').where('sourceId', '!=', res.body.data.id).execute());
+    const mode = env.NOTIFICATIONS_MODE;
+    env.NOTIFICATIONS_MODE = 'disabled';
+    try {
+      await dispatchDue(50);
+    } finally {
+      env.NOTIFICATIONS_MODE = mode;
+    }
+    const confirmations = (await notificationsFor(res.body.data.id)).filter((n) => n.eventType === 'appointment_confirmation');
+    expect(confirmations.length).toBeGreaterThan(0);
+    expect(confirmations.map((n) => n.status)).toEqual(confirmations.map(() => 'skipped'));
+    expect(send).not.toHaveBeenCalled();
+    const failed = await owner.get('/notifications?status=failed&pageSize=100');
+    const failedIds = new Set(failed.body.data.map((n: { id: string }) => n.id));
+    expect(confirmations.filter((n) => failedIds.has(n.id))).toEqual([]);
   });
 
   it('re-checks consent at send time', async () => {
