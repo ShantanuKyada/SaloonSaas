@@ -9,12 +9,14 @@ test.describe('Front desk', () => {
     const drawer = page.getByRole('dialog', { name: 'New appointment' });
     await expect(drawer).toBeVisible();
 
-    // 1. Customer: not found, so add them on the spot
+    // 1. Customer: not found, so add them on the spot with just a name and mobile number, without leaving the booking
     await drawer.getByRole('searchbox', { name: /Find customer/i }).fill(name);
     await drawer.getByRole('button', { name: new RegExp(`Add “${name}” as a new customer`) }).click();
-    const customerDialog = page.getByRole('dialog', { name: /customer/i }).last();
-    await customerDialog.getByLabel('Mobile number').fill(uniqueMobile());
-    await customerDialog.getByRole('button', { name: 'Add customer' }).click();
+    const newCustomer = drawer.getByRole('group', { name: 'New customer' });
+    await expect(newCustomer.getByLabel('Full name')).toHaveValue(name);
+    await newCustomer.getByLabel('Mobile number').fill(uniqueMobile());
+    await newCustomer.getByRole('button', { name: 'Add customer' }).click();
+    await expect(page.getByText(`${name} added`)).toBeVisible();
     await expect(drawer.getByText(name).first()).toBeVisible();
 
     // 2. Service, 3. date and time

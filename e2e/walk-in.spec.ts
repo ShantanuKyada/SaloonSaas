@@ -47,6 +47,43 @@ test.describe('Walk-ins', () => {
     await expect(cardOf(page.getByRole('region', { name: 'Completed' }), name, 'Create bill').getByRole('button', { name: 'Create bill' })).toBeVisible();
   });
 
+  test('a new walk-in is added with just a name and mobile number, and the rest of the profile is filled in later', async ({ page, request }) => {
+    const api = await apiAs(request, USERS.rajkotReception);
+    const regular = uniqueName('E2E Regular');
+    const regularMobile = uniqueMobile();
+    await api.post('/customers', { fullName: regular, mobile: regularMobile });
+    const name = uniqueName('E2E Newcomer');
+
+    await signInAs(page, USERS.rajkotReception, '/walk-ins');
+    await page.getByRole('button', { name: /^Walk-in/ }).first().click();
+    const drawer = page.getByRole('dialog', { name: 'Walk-in' });
+    await drawer.getByRole('searchbox', { name: /Find customer/i }).fill(name);
+    await drawer.getByRole('button', { name: new RegExp(`Add “${name}” as a new customer`) }).click();
+    const newCustomer = drawer.getByRole('group', { name: 'New customer' });
+    await expect(newCustomer.getByLabel('Full name')).toHaveValue(name);
+    await expect(newCustomer.getByLabel('Mobile number')).toBeFocused();
+
+    // Someone else's number: offered their record instead of a duplicate
+    await newCustomer.getByLabel('Mobile number').fill(regularMobile);
+    await newCustomer.getByLabel('Mobile number').press('Enter');
+    await expect(newCustomer.getByText(`This mobile number already belongs to ${regular}`)).toBeVisible();
+
+    await newCustomer.getByLabel('Mobile number').fill(uniqueMobile());
+    await newCustomer.getByRole('button', { name: 'Add customer' }).click();
+    await expect(page.getByText(`${name} added`)).toBeVisible();
+    await expect(newCustomer).toHaveCount(0);
+    await drawer.getByRole('button', { name: 'Haircut (Women)' }).first().click();
+    await drawer.getByRole('button', { name: 'Add to queue' }).click();
+    await expect(page.getByRole('region', { name: 'Waiting' }).getByText(name)).toBeVisible();
+
+    // Their page asks for the rest of their details
+    const [found] = await api.get<Array<{ id: string }>>('/customers/search', { q: name });
+    await page.goto(`/customers/${found!.id}`);
+    await expect(page.getByText('Only a name and mobile number so far')).toBeVisible();
+    await page.getByRole('button', { name: 'Add details' }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit customer' }).getByLabel('Full name')).toHaveValue(name);
+  });
+
   test('a walk-in who is not assigned yet can be removed from the queue', async ({ page, request }) => {
     const api = await apiAs(request, USERS.rajkotReception);
     const branches = await api.get<Array<{ id: string }>>('/branches');

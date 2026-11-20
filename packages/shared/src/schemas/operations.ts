@@ -61,6 +61,8 @@ export type CustomerUpdateInput = z.input<typeof customerUpdateSchema>;
 export const quickCustomerSchema = z.object({
   fullName: zName,
   mobile: optionalPhone,
+  /** The branch the customer was added at (the one the receptionist is working in); defaults to the user's first branch. */
+  branchId: optionalId,
   gender: z.enum(GENDERS).default('unspecified'),
   email: optionalEmail,
   marketingConsent: z.boolean().default(false),
