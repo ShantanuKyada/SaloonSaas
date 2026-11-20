@@ -319,6 +319,60 @@ describe('packages', () => {
   });
 });
 
+describe('package sale dates and archiving', () => {
+  const create = (code: string, over: Record<string, unknown> = {}) =>
+    owner.post('/packages').send({ code, name: `Package ${code}`, price: 100000, validityDays: 30, items: [{ serviceId: facial, quantity: 1 }], ...over });
+
+  it('is only on sale between its first and last day of sale', async () => {
+    const c = await createCustomer(t, 'Window Customer');
+    const soon = await create('SOON', { saleStartsOn: futureDate(3), saleEndsOn: futureDate(10) });
+    expect(soon.status).toBe(201);
+    expect(soon.body.data.state).toBe('scheduled');
+    const over = await create('OVER', { saleStartsOn: futureDate(-10), saleEndsOn: futureDate(-1) });
+    expect(over.body.data.state).toBe('ended');
+    const now = await create('NOW', { saleStartsOn: futureDate(-1), saleEndsOn: futureDate(1) });
+    expect(now.body.data.state).toBe('on_sale');
+    const paused = await create('PAUSE', { status: 'inactive' });
+    expect(paused.body.data.state).toBe('paused');
+
+    const early = await bill(c, [{ type: 'package_sale', key: 'p', packageId: soon.body.data.id }]);
+    expect(early.status).toBe(422);
+    expect(early.body.message).toMatch(/goes on sale/);
+    const late = await bill(c, [{ type: 'package_sale', key: 'p', packageId: over.body.data.id }]);
+    expect(late.status).toBe(422);
+    expect(late.body.message).toMatch(/no longer on sale/);
+    expect((await bill(c, [{ type: 'package_sale', key: 'p', packageId: now.body.data.id }])).status).toBe(201);
+
+    const backwards = await create('BACK', { saleStartsOn: futureDate(5), saleEndsOn: futureDate(1) });
+    expect(backwards.status).toBe(400);
+    expect(backwards.body.details.issues[0].path).toBe('saleEndsOn');
+  });
+
+  it('lists archived packages and offers separately and brings them back', async () => {
+    const pkg = await create('ARCH');
+    expect((await owner.delete(`/packages/${pkg.body.data.id}`)).status).toBe(204);
+    const current = (await owner.get('/packages')).body.data as Array<{ id: string }>;
+    expect(current.map((p) => p.id)).not.toContain(pkg.body.data.id);
+    const archived = (await owner.get('/packages?archived=true')).body.data as Array<{ id: string; state: string }>;
+    expect(archived.find((p) => p.id === pkg.body.data.id)?.state).toBe('archived');
+    const back = await owner.post(`/packages/${pkg.body.data.id}/restore`);
+    expect(back.status).toBe(200);
+    expect(back.body.data).toMatchObject({ status: 'active', state: 'on_sale' });
+    expect((await owner.post(`/packages/${pkg.body.data.id}/restore`)).status).toBe(404); // nothing to restore any more
+
+    const offer = await owner.post('/offers').send({ name: 'Archive me', discountType: 'percentage', discountValue: 500, validFrom: futureDate(-1), validTo: futureDate(5) });
+    await owner.delete(`/offers/${offer.body.data.id}`);
+    const archivedOffers = (await owner.get('/offers?archived=true')).body.data as Array<{ id: string; state: string }>;
+    expect(archivedOffers.map((o) => [o.id, o.state])).toContainEqual([offer.body.data.id, 'archived']);
+    expect(((await owner.get('/offers')).body.data as Array<{ id: string }>).map((o) => o.id)).not.toContain(offer.body.data.id);
+    const restored = await owner.post(`/offers/${offer.body.data.id}/restore`);
+    expect(restored.body.data).toMatchObject({ status: 'active', state: 'running' });
+
+    const recep = await createUserWithRole(t, 'receptionist');
+    expect((await authed(recep.token).post(`/packages/${pkg.body.data.id}/restore`)).status).toBe(403);
+  });
+});
+
 describe('billing from an appointment', () => {
   it('completes a running service, bills it with the quoted price and links the bill', async () => {
     const c = await createCustomer(t, 'Appointment Bill');

@@ -250,5 +250,10 @@ export const packageSchema = z
     message: 'Each service can appear only once — increase its quantity instead',
     path: ['items'],
   })
+  .refine((v) => !v.saleStartsOn || !v.saleEndsOn || v.saleEndsOn >= v.saleStartsOn, { message: 'The last day of sale must be on or after the first', path: ['saleEndsOn'] })
   .refine((v) => v.allBranches || v.branchIds.length > 0, { message: 'Choose at least one branch', path: ['branchIds'] });
 export type PackageInput = z.input<typeof packageSchema>;
+
+/** Whether a package can be sold today (see the API's packageState). */
+export const PACKAGE_STATES = ['on_sale', 'scheduled', 'ended', 'sold_out', 'paused', 'archived'] as const;
+export type PackageState = (typeof PACKAGE_STATES)[number];

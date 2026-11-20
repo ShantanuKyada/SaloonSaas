@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { PACKAGE_SEGMENTS, packageSchema, type PackageSegment } from '@salon/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -11,73 +11,73 @@ import { Money, useMoney } from '@/components/common/badges';
 import { MultiSelectList } from '@/components/common/MultiSelectList';
 import { Button, IconButton } from '@/components/ui/button';
 import { Badge, Card, EmptyState, ErrorState, PageHeader, Skeleton } from '@/components/ui/display';
-import { DateInput, Field, FormError, Input, MoneyInput, Select, Switch, Textarea } from '@/components/ui/form';
+import { DateInput, Field, FormError, Input, MoneyInput, Segmented, Select, Switch, Textarea } from '@/components/ui/form';
 import { Drawer, Menu, useConfirm } from '@/components/ui/overlay';
 import { api, ApiError } from '@/lib/api';
 import { useCan } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { friendlyError } from '@/lib/errors';
+import { fmtDay } from '@/lib/format';
+import { packageBadge, type PackageRow } from '@/lib/packages';
 import { qk, useServices } from '@/lib/queries';
 
 type FormIn = z.input<typeof packageSchema>;
 type FormOut = z.output<typeof packageSchema>;
 
-interface PackageRow {
-  id: string;
-  code: string;
-  name: string;
-  description: string | null;
-  price: number;
-  taxRateBp: number | null;
-  validityDays: number;
-  allBranches: boolean;
-  customerSegment: PackageSegment;
-  maxPerCustomer: number | null;
-  saleLimitTotal: number | null;
-  soldCount: number;
-  saleStartsOn: string | null;
-  saleEndsOn: string | null;
-  status: string;
-  items: Array<{ serviceId: string; quantity: number; serviceName: string; servicePrice: number }>;
-  originalValue: number;
-  savings: number;
-  branchIds: string[];
-}
 
 const SEGMENT_LABEL: Record<PackageSegment, string> = { all: 'Everyone', new_customers: 'New customers only', existing_customers: 'Existing customers only' };
+
+/** "On sale 1 Dec 2026 – 31 Dec 2026", "On sale until 31 Dec 2026"… or nothing when it has no dates. */
+function saleWindow(p: Pick<PackageRow, 'saleStartsOn' | 'saleEndsOn'>, timezone: string): string | null {
+  const from = p.saleStartsOn ? fmtDay(p.saleStartsOn, timezone, true) : null;
+  const to = p.saleEndsOn ? fmtDay(p.saleEndsOn, timezone, true) : null;
+  if (from && to) return `On sale ${from} – ${to}`;
+  if (from) return `On sale from ${from}`;
+  if (to) return `On sale until ${to}`;
+  return null;
+}
 
 /** Prepaid bundles ("5 facials for the price of 4") and combos. Bought once, used over several visits. */
 export function Component() {
   const manage = useCan()('packages.manage');
   const confirm = useConfirm();
   const client = useQueryClient();
+  const { timezone } = useBranch();
   const [editing, setEditing] = useState<PackageRow | 'new' | null>(null);
-  const q = useQuery({ queryKey: qk.packages, queryFn: () => api.get<PackageRow[]>('/packages') });
-  const archive = useMutation({ mutationFn: (id: string) => api.delete(`/packages/${id}`), onSuccess: () => { void client.invalidateQueries({ queryKey: qk.packages }); toast.success('Package archived'); }, onError: toastError });
+  const [view, setView] = useState<'current' | 'archived'>('current');
+  const archived = view === 'archived';
+  const q = useQuery({ queryKey: archived ? [...qk.packages, 'archived'] : qk.packages, queryFn: () => api.get<PackageRow[]>('/packages', archived ? { archived: 'true' } : undefined) });
+  const archive = useMutation({ mutationFn: (p: PackageRow) => api.delete(`/packages/${p.id}`), onSuccess: (_, p) => { void client.invalidateQueries({ queryKey: qk.packages }); toast.success(`${p.name} archived`, { description: 'Find it under Archived to bring it back.' }); }, onError: toastError });
+  const restore = useMutation({ mutationFn: (p: PackageRow) => api.post<PackageRow>(`/packages/${p.id}/restore`), onSuccess: (p) => { void client.invalidateQueries({ queryKey: qk.packages }); toast.success(`${p.name} restored`, { description: packageBadge(p, timezone).label }); }, onError: toastError });
 
   return (
     <div>
       <PageHeader title="Packages and combos" description="Bundles customers pay for once and use over several visits." actions={manage && <Button icon={<Plus className="size-4" />} onClick={() => setEditing('new')}>Create package</Button>} />
+      <div className="mb-4"><Segmented label="Which packages" value={view} onChange={setView} options={[{ value: 'current', label: 'Current' }, { value: 'archived', label: 'Archived' }]} /></div>
       {q.isLoading && <div role="status" aria-label="Loading packages" className="grid gap-3 md:grid-cols-2"><Skeleton className="h-40" /><Skeleton className="h-40" /></div>}
       {q.isError && <ErrorState error={q.error} onRetry={() => void q.refetch()} />}
-      {q.data && q.data.length === 0 && <Card><EmptyState title="No packages yet" description="Create a bundle such as “Bridal glow: 3 facials + 2 hair spas”." action={manage && <Button onClick={() => setEditing('new')}>Create package</Button>} /></Card>}
+      {q.data && q.data.length === 0 && (archived
+        ? <Card><EmptyState title="No archived packages" description="Packages you archive appear here, so you can bring them back." /></Card>
+        : <Card><EmptyState title="No packages yet" description="Create a bundle such as “Bridal glow: 3 facials + 2 hair spas”." action={manage && <Button onClick={() => setEditing('new')}>Create package</Button>} /></Card>)}
       <ul className="grid gap-3 md:grid-cols-2">
         {q.data?.map((p) => (
           <li key={p.id}>
             <Card className="h-full">
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{p.name}</h2><Badge tone={p.status === 'active' ? 'success' : 'neutral'}>{p.status === 'active' ? 'On sale' : 'Paused'}</Badge></div>
+                  <div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold">{p.name}</h2><Badge tone={packageBadge(p, timezone).tone}>{packageBadge(p, timezone).label}</Badge></div>
                   <p className="mt-1 text-xl font-semibold"><Money value={p.price} />{p.savings > 0 && <span className="ml-2 text-sm font-normal text-success">Saves <Money value={p.savings} /></span>}</p>
                   <ul className="mt-2 space-y-0.5 text-sm text-muted">{p.items.map((i) => <li key={i.serviceId}>{i.quantity} × {i.serviceName}</li>)}</ul>
                   <p className="mt-2 text-xs text-muted">Valid {p.validityDays} days from purchase · {SEGMENT_LABEL[p.customerSegment]} · {p.soldCount} sold{p.saleLimitTotal ? ` of ${p.saleLimitTotal}` : ''}</p>
+                  {saleWindow(p, timezone) && <p className="mt-0.5 text-xs text-muted">{saleWindow(p, timezone)}</p>}
                 </div>
-                {manage && (
+                {manage && !archived && (
                   <Menu label={`Actions for ${p.name}`} trigger={<IconButton label={`Actions for ${p.name}`} size="sm"><MoreHorizontal className="size-5" /></IconButton>} items={[
                     { label: 'Edit', icon: <Pencil className="size-4" />, onSelect: () => setEditing(p) },
-                    { label: 'Archive', icon: <Archive className="size-4" />, tone: 'danger', onSelect: async () => { if (await confirm({ title: `Archive “${p.name}”?`, body: 'It can no longer be sold. Customers who already bought it keep their remaining sessions.', confirmLabel: 'Archive package', cancelLabel: 'Keep package', tone: 'danger' })) archive.mutate(p.id); } },
+                    { label: 'Archive', icon: <Archive className="size-4" />, tone: 'danger', onSelect: async () => { if (await confirm({ title: `Archive “${p.name}”?`, body: 'It can no longer be sold. Customers who already bought it keep their remaining sessions. You can bring it back from Archived.', confirmLabel: 'Archive package', cancelLabel: 'Keep package', tone: 'danger' })) archive.mutate(p); } },
                   ]} />
                 )}
+                {manage && archived && <Button size="sm" variant="outline" icon={<ArchiveRestore className="size-4" />} loading={restore.isPending && restore.variables?.id === p.id} onClick={() => restore.mutate(p)}>Restore</Button>}
               </div>
             </Card>
           </li>

@@ -14,7 +14,9 @@ import { api, ApiError, newIdempotencyKey } from '@/lib/api';
 import { useCan } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { friendlyError } from '@/lib/errors';
+import { fmtDay } from '@/lib/format';
 import { useDebounced } from '@/lib/hooks';
+import { sellableAt, usePackages } from '@/lib/packages';
 import { useServices, useStaffList } from '@/lib/queries';
 
 type Line = InvoiceLineInput & { key: string };
@@ -335,16 +337,21 @@ function SumRow({ label, value, tone }: { label: string; value: number; tone?: '
 
 function PackageModal({ onClose, onPick }: { onClose: () => void; onPick: (packageId: string) => void }) {
   const money = useMoney();
-  const q = useQuery({ queryKey: ['packages'], queryFn: () => api.get<Array<{ id: string; name: string; price: number; originalValue: number; savings: number; validityDays: number; items: Array<{ serviceName: string; quantity: number }>; status: string }>>('/packages') });
+  const { branchId, timezone } = useBranch();
+  const q = usePackages();
+  // Only what can be sold here today: on sale (switch, dates and sale limit) and sold at this branch.
+  const sellable = sellableAt(q.data, branchId);
+  const notToday = (q.data?.length ?? 0) - sellable.length;
   return (
     <Modal open onOpenChange={(o) => !o && onClose()} title="Sell a package" size="lg">
       {q.isLoading && <Skeleton className="h-24" />}
-      {q.data?.filter((p) => p.status === 'active').length === 0 && <EmptyState title="No packages yet" description="Create packages under Services → Packages & combos." />}
+      {q.data && sellable.length === 0 && <EmptyState title="No packages on sale today" description={notToday > 0 ? `${notToday} ${notToday === 1 ? 'package is' : 'packages are'} paused, outside ${notToday === 1 ? 'its' : 'their'} sale dates, sold out or not sold at this branch.` : 'Create packages under Services → Packages & combos.'} />}
+      {sellable.length > 0 && notToday > 0 && <p className="mb-3 text-xs text-muted">{notToday} more not on sale here today (paused, outside their sale dates, sold out or sold at other branches).</p>}
       <ul className="space-y-3">
-        {q.data?.filter((p) => p.status === 'active').map((p) => (
+        {sellable.map((p) => (
           <li key={p.id} className="rounded-xl border border-line p-4">
             <div className="flex items-start justify-between gap-3">
-              <div><p className="font-semibold">{p.name}</p><p className="text-sm text-muted">{p.items.map((i) => `${i.quantity}× ${i.serviceName}`).join(' + ')}</p><p className="text-xs text-muted">Valid for {p.validityDays} days</p></div>
+              <div><p className="font-semibold">{p.name}</p><p className="text-sm text-muted">{p.items.map((i) => `${i.quantity}× ${i.serviceName}`).join(' + ')}</p><p className="text-xs text-muted">Valid for {p.validityDays} days{p.saleEndsOn ? ` · on sale until ${fmtDay(p.saleEndsOn, timezone, true)}` : ''}</p></div>
               <div className="text-right"><p className="font-semibold">{money(p.price)}</p>{p.savings > 0 && <p className="text-xs text-success">Worth {money(p.originalValue)} · saves {money(p.savings)}</p>}</div>
             </div>
             <Button size="sm" className="mt-3" onClick={() => onPick(p.id)}>Add to bill</Button>
