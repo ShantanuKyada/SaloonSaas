@@ -3,6 +3,8 @@ name: Hosted database (Supabase)
 # Prepares a hosted Supabase database for SalonOS: creates the salon_owner and salon_app roles, applies the
 # migrations and, if asked, loads the demo salon. Safe to run again: it only applies migrations that are new and
 # never loads demo data into a database that already has a salon. Run it from the Actions tab: "Run workflow".
+# It also runs by itself (staging, no demo data) when a change to main adds a migration, so the database is migrated
+# before Render deploys that change: Render waits for every check on the commit to pass ("After CI checks pass").
 #
 # Configure each target as a GitHub environment (Settings > Environments), e.g. "staging":
 #   variables  SUPABASE_PROJECT_REF   the project's reference id (Project Settings > General)
@@ -14,6 +16,9 @@ name: Hosted database (Supabase)
 # See docs/DEPLOYMENT.md, "Supabase".
 
 on:
+  push:
+    branches: [main]
+    paths: ["apps/api/src/db/migrations/**"]
   workflow_dispatch:
     inputs:
       environment:
@@ -26,7 +31,7 @@ on:
         default: false
 
 concurrency:
-  group: hosted-database-${{ inputs.environment }}
+  group: hosted-database-${{ inputs.environment || 'staging' }}
   cancel-in-progress: false
 
 permissions:
@@ -48,9 +53,9 @@ env:
 
 jobs:
   database:
-    name: Roles, migrations${{ inputs.load_demo_data && ' and demo data' || '' }} (${{ inputs.environment }})
+    name: Roles, migrations${{ inputs.load_demo_data && ' and demo data' || '' }} (${{ inputs.environment || 'staging' }})
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    environment: ${{ inputs.environment || 'staging' }}
     timeout-minutes: 20
     services:
       # Used only to build the demo data, which is then copied across in one transfer: seeding the hosted database
@@ -75,7 +80,7 @@ jobs:
 
       - name: Connection settings
         env:
-          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          TARGET_ENVIRONMENT: ${{ inputs.environment || 'staging' }}
           SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
           SUPABASE_POOLER_HOST: ${{ vars.SUPABASE_POOLER_HOST }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
@@ -144,7 +149,7 @@ jobs:
           DATABASE_MIGRATION_URL: postgres://salon_owner:runner-owner@localhost:5432/salon_dev
           DATABASE_URL: postgres://salon_app:runner-app@localhost:5432/salon_dev
         run: |
-          if [ "${{ inputs.environment }}" = "production" ]; then echo "::error::Demo data is never loaded into production."; exit 1; fi
+          if [ "${{ inputs.environment || 'staging' }}" = "production" ]; then echo "::error::Demo data is never loaded into production."; exit 1; fi
           npm run db:setup
           npm run db:migrate
           npm run db:seed
@@ -169,7 +174,7 @@ jobs:
             left join (select customer_id, sum(debit - credit) as net from ledger_entries group by customer_id) l on l.customer_id = c.id
             left join customer_accounts ca on ca.customer_id = c.id where coalesce(l.net, 0) <> coalesce(ca.balance, 0);
           SQL
-          { echo "### Hosted database (${{ inputs.environment }})"; echo; echo "| Check | Value |"; echo "| --- | --- |"; sed 's/^/| /; s/$/ |/' "$RUNNER_TEMP/check.txt"; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### Hosted database (${{ inputs.environment || 'staging' }})"; echo; echo "| Check | Value |"; echo "| --- | --- |"; sed 's/^/| /; s/$/ |/' "$RUNNER_TEMP/check.txt"; } >> "$GITHUB_STEP_SUMMARY"
           cat "$RUNNER_TEMP/check.txt"
           if ! grep -q '^Customers whose balance differs from the ledger | 0$' "$RUNNER_TEMP/check.txt"; then
             echo "::error::Customer balances do not reconcile with the ledger"; exit 1
