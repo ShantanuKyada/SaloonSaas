@@ -1,17 +1,18 @@
-import { PAYMENT_METHOD_LABELS, PAYMENT_METHODS, type PaymentDto, type PaymentMethod } from '@salon/shared';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { PAYMENT_METHOD_LABELS, PAYMENT_METHODS, type OutstandingCustomerRow, type PaymentDto, type PaymentMethod } from '@salon/shared';
+import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
 import { Wallet } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { Money, useMoney } from '@/components/common/badges';
 import { CustomerPicker, toPicked, useCustomer360, type PickedCustomer } from '@/components/common/CustomerPicker';
 import { Button } from '@/components/ui/button';
-import { Badge, Card, CardHeader, EmptyState, InlineNotice, PageHeader, Skeleton } from '@/components/ui/display';
-import { Checkbox, Field, Input, MoneyInput, Segmented, Select } from '@/components/ui/form';
+import { Avatar, Badge, Card, CardHeader, EmptyState, InlineNotice, PageHeader, Skeleton } from '@/components/ui/display';
+import { Checkbox, Field, Input, MoneyInput, SearchInput, Segmented, Select } from '@/components/ui/form';
 import { api, newIdempotencyKey } from '@/lib/api';
 import { useBranch } from '@/lib/branch';
 import { friendlyError } from '@/lib/errors';
 import { fmtDay } from '@/lib/format';
+import { useDebounced } from '@/lib/hooks';
 
 interface OpenInvoice {
   id: string;
@@ -34,6 +35,7 @@ export function Component() {
   const [payBranch, setPayBranch] = useState(branchId);
   const [customerId, setCustomerId] = useState<string | null>(params.get('customerId'));
   const [picked, setPicked] = useState<PickedCustomer | null>(null);
+  const [anyone, setAnyone] = useState(false); // search every customer (to take an advance) instead of only those who owe
   const loaded = useCustomer360(customerId);
   useEffect(() => { if (loaded.data) setPicked(toPicked(loaded.data)); }, [loaded.data]);
 
@@ -83,7 +85,14 @@ export function Component() {
         <Card>
           <CardHeader title="Who is paying?" />
           {branches.length > 1 && <Field label="Receiving at" className="mb-3 max-w-64"><Select value={payBranch} onChange={(e) => setPayBranch(e.target.value)}>{branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</Select></Field>}
-          <CustomerPicker value={customerId} autoFocus={!customerId} onChange={(c) => { setCustomerId(c?.id ?? null); setPicked(c); setChosen(null); setTyped(false); }} />
+          {customerId || anyone ? (
+            <>
+              <CustomerPicker value={customerId} autoFocus={!customerId} onChange={(c) => { setCustomerId(c?.id ?? null); setPicked(c); setChosen(null); setTyped(false); if (!c) setAnyone(false); }} />
+              {!customerId && <button type="button" onClick={() => setAnyone(false)} className="mt-3 text-sm font-medium text-primary hover:underline">← Only customers with pending payments</button>}
+            </>
+          ) : (
+            <PendingCustomers onPick={(id) => { setCustomerId(id); setChosen(null); setTyped(false); }} onAnyone={() => setAnyone(true)} />
+          )}
         </Card>
 
         {customerId && (
@@ -131,6 +140,54 @@ export function Component() {
         )}
         {customerId && picked && picked.outstanding > 0 && invoices.length === 0 && open.data && <Badge tone="warning">The customer shows {money(picked.outstanding)} pending at a branch you cannot collect for.</Badge>}
       </div>
+    </div>
+  );
+}
+
+/** Who owes money, largest amount first: the people a receptionist collects from. Search narrows the same list. */
+function PendingCustomers({ onPick, onAnyone }: { onPick: (customerId: string) => void; onAnyone: () => void }) {
+  const { timezone } = useBranch();
+  const [text, setText] = useState('');
+  const q = useDebounced(text.trim(), 200);
+  const list = useQuery({
+    queryKey: ['outstanding', 'customers', 'collect', q],
+    queryFn: ({ signal }) => api.list<OutstandingCustomerRow>('/outstanding/customers', { search: q || undefined, pageSize: 8, sortBy: 'outstanding', sortDir: 'desc' }, signal),
+    placeholderData: keepPreviousData,
+  });
+  const rows = list.data?.rows ?? [];
+  const more = (list.data?.meta.total ?? 0) - rows.length;
+
+  return (
+    <div className="space-y-2">
+      <SearchInput autoFocus value={text} onChange={setText} placeholder="Name, mobile number or customer code" aria-label="Find a customer with a pending payment" />
+      <div className="overflow-hidden rounded-xl border border-line bg-surface">
+        {list.isLoading ? (
+          <div className="space-y-2 p-3"><Skeleton className="h-10" /><Skeleton className="h-10" /></div>
+        ) : list.isError ? (
+          <p className="px-3 py-3 text-sm text-danger" role="alert">We could not load pending payments. <button type="button" className="font-medium underline" onClick={() => void list.refetch()}>Try again</button></p>
+        ) : rows.length === 0 ? (
+          <p className="px-3 py-3 text-sm text-muted">{q ? `Nobody matching “${q}” has a pending payment.` : 'Nobody has a pending payment right now.'}</p>
+        ) : (
+          <ul aria-label="Customers with pending payments">
+            {rows.map((c) => (
+              <li key={c.customerId}>
+                <button type="button" onClick={() => onPick(c.customerId)} className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-surface-2 focus-visible:bg-surface-2">
+                  <Avatar name={c.fullName} size="sm" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-fg">{c.fullName}</span>
+                    <span className="block truncate text-xs text-muted">
+                      {c.customerCode}{c.mobile ? ` · ${c.mobile}` : ''} · {c.invoiceCount} {c.invoiceCount === 1 ? 'bill' : 'bills'}{c.oldestInvoiceDate ? ` since ${fmtDay(c.oldestInvoiceDate, timezone)}` : ''}
+                    </span>
+                  </span>
+                  <span className="font-semibold tabular-nums text-warning"><Money value={c.outstanding} /></span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {more > 0 && <p className="border-t border-line px-3 py-2 text-xs text-muted">{more} more with pending payments: search by name or number to find them.</p>}
+      </div>
+      <button type="button" onClick={onAnyone} className="text-sm font-medium text-primary hover:underline">Taking an advance? Find any customer</button>
     </div>
   );
 }
