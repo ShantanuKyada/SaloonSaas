@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { CustomerPicker, toPicked, useCustomer360, type PickedCustomer } from '@/components/common/CustomerPicker';
+import { PackageChooser, useVisitPackages } from '@/components/common/PackageChooser';
 import { ServicePicker } from '@/components/common/ServicePicker';
 import { Button } from '@/components/ui/button';
 import { InlineNotice } from '@/components/ui/display';
@@ -24,6 +25,8 @@ export default function WalkInDrawer({ prefill, onClose }: { prefill: { customer
     if (loaded.data) setPicked(toPicked(loaded.data));
   }, [loaded.data]);
   const [serviceIds, setServiceIds] = useState<string[]>([]);
+  // Packages and combos bought at this visit (sold on its bill; the services they cover use their sessions).
+  const visitPackages = useVisitPackages(serviceIds, setServiceIds);
   const [staffByService, setStaffByService] = useState<Record<string, string>>({});
   const [startNow, setStartNow] = useState(false);
   const services = useServices(branchId, { popular: true });
@@ -40,7 +43,7 @@ export default function WalkInDrawer({ prefill, onClose }: { prefill: { customer
   });
 
   const create = useMutation({
-    mutationFn: () => api.post<AppointmentDto>('/walkins', { branchId, customerId, items: serviceIds.map((serviceId) => ({ serviceId, staffId: staffByService[serviceId] || undefined })), startNow }),
+    mutationFn: () => api.post<AppointmentDto>('/walkins', { branchId, customerId, items: serviceIds.map((serviceId) => ({ serviceId, staffId: staffByService[serviceId] || undefined, buyPackageId: visitPackages.buyPackage[serviceId] })), startNow }),
     onSuccess: (a) => {
       for (const key of ['walkins', 'appointments', 'calendar', 'dashboard', 'customer-360']) void client.invalidateQueries({ queryKey: [key] });
       toast.success(`${a.customer.fullName.split(' ')[0]} is ${a.status === 'in_service' ? 'being served' : `in the queue (#${a.queueNumber})`}`);
@@ -73,7 +76,8 @@ export default function WalkInDrawer({ prefill, onClose }: { prefill: { customer
         </section>
         <section className="space-y-3">
           <h3 className="text-sm font-semibold">Services</h3>
-          <ServicePicker services={services.data ?? []} selected={serviceIds} onToggle={(id) => setServiceIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))} usualIds={[picked?.favoriteServiceId, picked?.suggestion?.serviceId].filter((v): v is string => !!v)} />
+          <PackageChooser branchId={branchId} chosen={visitPackages.chosen} onToggle={visitPackages.toggle} />
+          <ServicePicker services={services.data ?? []} selected={serviceIds} onToggle={(id) => { if (serviceIds.includes(id)) visitPackages.forget(id); setServiceIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id])); }} usualIds={[picked?.favoriteServiceId, picked?.suggestion?.serviceId].filter((v): v is string => !!v)} />
         </section>
         {serviceIds.length > 0 && (
           <section className="space-y-3">

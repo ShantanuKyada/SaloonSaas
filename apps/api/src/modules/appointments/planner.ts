@@ -4,6 +4,7 @@ import { AppError } from '../../core/errors.js';
 import { localDateOf } from '../../core/time.js';
 import type { BranchRow, OrgSettings } from '../../core/validation.js';
 import { advisoryLock, type Tx } from '../../db/tenant.js';
+import { assertPackageSellable, loadPackages } from '../billing/resolve.js';
 import { checkBooking, type Interval } from '../scheduling/engine.js';
 import { effectiveBuffer, loadDayContext, loadServicesForBranch, loadStaffDays, type DayContext } from '../scheduling/loader.js';
 
@@ -19,6 +20,9 @@ export interface ItemPlan {
   bufferMinutes: number;
   price: number;
   customerPackageItemId: string | null;
+  /** A package bought at this visit pays for this service (its price is counted once, see summarizePlans). */
+  buyPackageId: string | null;
+  buyPackagePrice: number;
   sortOrder: number;
 }
 
@@ -39,6 +43,47 @@ export interface PlanOptions {
   allowPast?: boolean;
   /** Items identical to these are not rejected for being in the past. */
   existing?: ExistingItem[];
+  /**
+   * Check that packages bought at this visit can be sold (dates, branch, limits). On for new bookings and edits; off when
+   * only moving, restoring or assigning a booking, so what was agreed with the customer is kept. Billing checks again.
+   */
+  checkPackageSale?: boolean;
+}
+
+/**
+ * Packages (or combos) the customer buys at this visit: each must include the services it pays for, with enough
+ * sessions for them, and (when asked) be on sale at this branch on the visit's date for this customer.
+ */
+export async function checkPackagesBought(
+  tx: Tx,
+  o: { orgId: string; branchId: string; customerId: string; date: string; checkSale: boolean },
+  items: Array<{ serviceId: string; buyPackageId?: string | null; customerPackageItemId?: string | null }>,
+): Promise<Map<string, { price: number; name: string }>> {
+  const bought = new Map<string, { price: number; name: string }>();
+  const ids = [...new Set(items.flatMap((i) => (i.buyPackageId ? [i.buyPackageId] : [])))];
+  if (!ids.length) return bought;
+  if (items.some((i) => i.buyPackageId && i.customerPackageItemId)) {
+    throw new AppError(400, 'VALIDATION_ERROR', 'A service can use a package the customer owns or one they buy at this visit, not both.');
+  }
+  const [pkgs, included] = await Promise.all([
+    loadPackages(tx, o.orgId, ids),
+    tx.selectFrom('packageItems as pi').innerJoin('services as s', 's.id', 'pi.serviceId').select(['pi.packageId', 'pi.serviceId', 'pi.quantity', 's.name as serviceName']).where('pi.organizationId', '=', o.orgId).where('pi.packageId', 'in', ids).execute(),
+  ]);
+  for (const id of ids) {
+    const pkg = pkgs.find((p) => p.id === id);
+    if (!pkg) throw new AppError(404, 'NOT_FOUND', 'Package not found.');
+    if (o.checkSale) await assertPackageSellable(tx, o.orgId, o.branchId, o.customerId, o.date, pkg, false);
+    const used = new Map<string, number>();
+    for (const item of items.filter((i) => i.buyPackageId === id)) {
+      const inc = included.find((r) => r.packageId === id && r.serviceId === item.serviceId);
+      if (!inc) throw new AppError(422, 'PACKAGE_UNAVAILABLE', `"${pkg.name}" does not include one of the chosen services.`);
+      const n = (used.get(item.serviceId) ?? 0) + 1;
+      if (n > inc.quantity) throw new AppError(422, 'PACKAGE_UNAVAILABLE', `"${pkg.name}" includes ${inc.quantity} session${inc.quantity === 1 ? '' : 's'} of ${inc.serviceName}.`);
+      used.set(item.serviceId, n);
+    }
+    bought.set(id, { price: pkg.price, name: pkg.name });
+  }
+  return bought;
 }
 
 function problemStatus(code: string): number {
@@ -62,6 +107,8 @@ export async function planItems(tx: Tx, items: AppointmentItemInput[], o: PlanOp
   const extraBusy = new Map<string, Interval[]>();
   const now = Date.now();
   const plans: ItemPlan[] = [];
+  const visitDate = items[0]?.startAt ? localDateOf(new Date(items[0].startAt), tz) : localDateOf(new Date(), tz);
+  const bought = await checkPackagesBought(tx, { orgId: o.orgId, branchId: o.branch.id, customerId: o.customerId, date: visitDate, checkSale: o.checkPackageSale ?? true }, items);
 
   // Package lines: lock the balance row so concurrent bookings cannot overspend a package.
   const packageIds = [...new Set(items.map((i) => i.customerPackageItemId).filter((v): v is string => !!v))];
@@ -133,6 +180,7 @@ export async function planItems(tx: Tx, items: AppointmentItemInput[], o: PlanOp
       if (pkg.expiresAt < start) throw new AppError(422, 'PACKAGE_UNAVAILABLE', 'This package expires before the appointment date.');
       price = 0;
     }
+    if (item.buyPackageId) price = 0; // paid by the package sold on the visit's bill
 
     const unchanged = o.existing?.some((e) => e.serviceId === item.serviceId && e.staffId === item.staffId && e.startAt?.getTime() === start) ?? false;
     const problem = checkBooking({
@@ -164,6 +212,8 @@ export async function planItems(tx: Tx, items: AppointmentItemInput[], o: PlanOp
       bufferMinutes: buffer,
       price,
       customerPackageItemId: item.customerPackageItemId ?? null,
+      buyPackageId: item.buyPackageId ?? null,
+      buyPackagePrice: item.buyPackageId ? bought.get(item.buyPackageId)!.price : 0,
       sortOrder: index,
     });
   }
@@ -177,6 +227,7 @@ export function summarizePlans(plans: ItemPlan[]) {
     startAt: new Date(Math.min(...starts)),
     endAt: new Date(Math.max(...ends)),
     totalDurationMinutes: plans.reduce((a, p) => a + p.durationMinutes, 0),
-    estimatedAmount: plans.reduce((a, p) => a + p.price, 0),
+    // Services paid by a package bought at the visit cost nothing themselves; the package price is counted once.
+    estimatedAmount: plans.reduce((a, p) => a + p.price, 0) + [...new Map(plans.filter((p) => p.buyPackageId).map((p) => [p.buyPackageId, p.buyPackagePrice])).values()].reduce((a, v) => a + v, 0),
   };
 }

@@ -130,7 +130,10 @@ export const appointmentItemInput = z.object({
   /** Required for the first service; later services default to starting right after the previous one. */
   startAt: zDateTime.optional(),
   durationMinutes: z.number().int().min(5).max(720).optional(),
+  /** Paid by a package the customer already owns: one of its sessions. */
   customerPackageItemId: optionalId,
+  /** Paid by a package (or combo) the customer buys at this visit: sold on the visit's bill, this service uses one of its sessions. */
+  buyPackageId: optionalId,
 });
 export type AppointmentItemInput = z.input<typeof appointmentItemInput>;
 
@@ -206,7 +209,7 @@ export const createWalkInSchema = z
       .object({ fullName: zName, mobile: optionalPhone, gender: z.enum(GENDERS).default('unspecified') })
       .optional(),
     items: z
-      .array(z.object({ serviceId: zId, staffId: optionalId }))
+      .array(z.object({ serviceId: zId, staffId: optionalId, buyPackageId: optionalId }))
       .min(1, 'Choose at least one service')
       .max(10),
     notes: optionalText(1000),

@@ -59,6 +59,8 @@ export function Component() {
   const staff = useStaffList(billBranch, { bookableOnly: false });
   const services = useServices(billBranch, { popular: true });
   const serviceName = useMemo(() => new Map((services.data ?? []).map((s) => [s.id, s.name])), [services.data]);
+  const packages = usePackages();
+  const packageById = useMemo(() => new Map((packages.data ?? []).map((x) => [x.id, x])), [packages.data]);
 
   // Pre-fill from a finished appointment: one tap from "Complete" to a ready bill.
   const draft = useQuery({
@@ -135,6 +137,25 @@ export function Component() {
   const canOverride = apiErr?.errorCode === 'CREDIT_LIMIT_EXCEEDED' && apiErr.details.canOverride === true;
 
   const updateLine = (key: string, patch: Partial<Line>) => setLines((cur) => cur.map((l) => (l.key === key ? ({ ...l, ...patch } as Line) : l)));
+  // Removing a package sold on this bill turns the services that used its sessions back into ordinary, paid services.
+  const removeLine = (line: Line) =>
+    setLines((cur) =>
+      cur
+        .filter((x) => x.key !== line.key)
+        .map((x): Line => (line.type === 'package_sale' && x.type === 'package_session' && x.saleKey === line.key ? { type: 'service', key: x.key, serviceId: x.serviceId, staffId: x.staffId, appointmentItemId: x.appointmentItemId, quantity: x.quantity } : x)),
+    );
+  // A package sold on this bill that includes this service and still has a session free for it.
+  const saleFor = (line: Extract<Line, { type: 'service' }>) => {
+    for (const sale of lines) {
+      if (sale.type !== 'package_sale') continue;
+      const pkg = packageById.get(sale.packageId);
+      const included = pkg?.items.find((i) => i.serviceId === line.serviceId);
+      if (!pkg || !included) continue;
+      const used = lines.reduce((a, x) => a + (x.type === 'package_session' && x.saleKey === sale.key && x.serviceId === line.serviceId ? (x.quantity ?? 1) : 0), 0);
+      if (used + (line.quantity ?? 1) <= included.quantity) return { key: sale.key, name: pkg.name };
+    }
+    return null;
+  };
   const packageFor = (serviceId: string) => {
     for (const pkg of picked?.packages ?? []) {
       if (pkg.status !== 'active' || new Date(pkg.expiresAt).getTime() < Date.now()) continue;
@@ -179,16 +200,17 @@ export function Component() {
                   const pl = byKey.get(l.key);
                   const svcId = l.type === 'service' ? l.serviceId : null;
                   const pkg = svcId ? packageFor(svcId) : null;
+                  const sale = l.type === 'service' ? saleFor(l) : null;
                   return (
                     <li key={l.key} className="space-y-2 px-4 py-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="truncate font-medium">{pl?.description ?? (l.type === 'service' ? serviceName.get(l.serviceId) : l.type === 'custom' ? l.description : '…')}</p>
+                          <p className="truncate font-medium">{pl?.description ?? (l.type === 'service' || l.type === 'package_session' ? serviceName.get(l.serviceId) : l.type === 'custom' ? l.description : '…')}</p>
                           {pl && pl.quantity > 1 && <p className="text-xs text-muted">{pl.quantity} × {money(pl.unitPrice)}</p>}
                         </div>
                         <div className="flex items-center gap-2">
                           {pl ? <span className="text-right text-sm font-semibold tabular-nums">{pl.itemType === 'package_redemption' ? <Badge tone="success">Package</Badge> : money(pl.gross)}</span> : <Skeleton className="h-5 w-16" />}
-                          <IconButton label="Remove" size="sm" onClick={() => setLines((cur) => cur.filter((x) => x.key !== l.key))}><Trash2 className="size-4" /></IconButton>
+                          <IconButton label="Remove" size="sm" onClick={() => removeLine(l)}><Trash2 className="size-4" /></IconButton>
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-3">
@@ -198,10 +220,14 @@ export function Component() {
                             {staffOptions.map((s) => <option key={s.id} value={s.id}>{s.displayName}</option>)}
                           </Select>
                         )}
-                        {l.type === 'service' && pkg && (
+                        {l.type === 'service' && sale && (
+                          <Button size="sm" variant="soft" icon={<Package className="size-4" />} onClick={() => updateLine(l.key, { type: 'package_session', saleKey: sale.key } as Partial<Line>)}>Use {sale.name} (bought now)</Button>
+                        )}
+                        {l.type === 'service' && pkg && !sale && (
                           <Button size="sm" variant="soft" icon={<Package className="size-4" />} onClick={() => updateLine(l.key, { type: 'package_redemption', customerPackageItemId: pkg.itemId, serviceId: undefined } as unknown as Partial<Line>)}>Use {pkg.name} ({pkg.remaining} left)</Button>
                         )}
                         {l.type === 'package_redemption' && <span className="text-xs text-success">Uses a package session: nothing to pay</span>}
+                        {l.type === 'package_session' && <span className="text-xs text-success">Uses a session of the package bought on this bill: nothing to pay</span>}
                         {(l.type === 'service' || l.type === 'custom') && (
                           <label className="flex items-center gap-1.5 text-xs text-muted">Qty
                             <Input type="number" min={1} max={99} className="h-9 w-16 text-center" value={l.quantity} onChange={(e) => updateLine(l.key, { quantity: Math.max(1, Math.min(99, Number(e.target.value) || 1)) })} />

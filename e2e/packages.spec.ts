@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { USERS, apiAs, signInAs, uniqueMobile, uniqueName, type Api } from './helpers';
+import { USERS, apiAs, arrangeBooking, signInAs, uniqueMobile, uniqueName, type Api } from './helpers';
 
 /** A date `days` from today in the salon's time zone (YYYY-MM-DD). */
 const day = (days: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() + days * 86_400_000));
@@ -56,5 +56,52 @@ test.describe('Packages and combos', () => {
     await expect(page.getByText(`${name} restored`)).toBeVisible();
     await page.getByRole('radio', { name: 'Current' }).click();
     await expect(page.getByRole('heading', { name })).toBeVisible();
+  });
+});
+
+test.describe('Packages chosen at the visit', () => {
+  test('a walk-in or booking can include a combo, which is sold on the visit’s bill and pays for its services', async ({ page, request }) => {
+    const owner = await apiAs(request, USERS.owner);
+    const services = await servicesByName(owner);
+    const combo = uniqueName('E2E Visit Combo');
+    const pkg = await owner.post<{ id: string }>('/packages', { code: code(), name: combo, price: 200000, validityDays: 60, items: [{ serviceId: services.get('Hair Spa'), quantity: 2 }, { serviceId: services.get('Facial'), quantity: 1 }] });
+    const reception = await apiAs(request, USERS.rajkotReception);
+
+    // Walk-in: choosing the combo adds its services, and says what is paid and what is left for later
+    const walkIn = uniqueName('E2E Combo Walkin');
+    await reception.post('/customers', { fullName: walkIn, mobile: uniqueMobile() });
+    await signInAs(page, USERS.rajkotReception, '/walk-ins');
+    await page.getByRole('button', { name: /^Walk-in/ }).first().click();
+    const drawer = page.getByRole('dialog', { name: 'Walk-in' });
+    await drawer.getByRole('searchbox', { name: /Find customer/i }).fill(walkIn);
+    await drawer.getByRole('button', { name: new RegExp(`^${walkIn}`) }).click();
+    await drawer.getByRole('button', { name: new RegExp(combo) }).click();
+    await expect(drawer.getByRole('checkbox', { name: /^Hair Spa/ })).toBeChecked();
+    await expect(drawer.getByRole('checkbox', { name: /^Facial/ })).toBeChecked();
+    await expect(drawer.getByText(`${combo} (₹2,000) is sold on this visit’s bill`)).toBeVisible();
+    await expect(drawer.getByText(/Left for later visits: 1 × Hair Spa/)).toBeVisible();
+    await drawer.getByRole('button', { name: 'Add to queue' }).click();
+    await expect(page.getByText(/is in the queue/)).toBeVisible();
+    const [queued] = await reception.get<Array<{ id: string; estimatedAmount: number; items: Array<{ buyPackageName: string | null; price: number }> }>>('/appointments', { search: walkIn });
+    expect(queued!.estimatedAmount).toBe(200000);
+    expect(queued!.items.map((i) => [i.buyPackageName, i.price])).toEqual([[combo, 0], [combo, 0]]);
+    await reception.post(`/appointments/${queued!.id}/status`, { status: 'cancelled', reason: 'E2E clean-up', notifyCustomer: false });
+
+    // Billing the visit: the combo is on the bill, the facial uses one of its sessions
+    const booking = await arrangeBooking(reception, { branchName: 'Glow Rajkot', serviceName: 'Facial', namePrefix: 'E2E Combo Booking' });
+    const original = await reception.get<{ version: number; items: Array<{ serviceId: string; staffId: string; startAt: string }> }>(`/appointments/${booking.appointmentId}`);
+    await reception.put(`/appointments/${booking.appointmentId}`, { version: original.version, notifyCustomer: false, items: original.items.map((i) => ({ serviceId: i.serviceId, staffId: i.staffId, startAt: i.startAt, buyPackageId: pkg.id })) });
+    for (const status of ['checked_in', 'in_service', 'completed']) await reception.post(`/appointments/${booking.appointmentId}/status`, { status, notifyCustomer: false });
+
+    await page.goto(`/billing/new?appointmentId=${booking.appointmentId}`);
+    await expect(page.getByText(`Package: ${combo}`, { exact: true })).toBeVisible();
+    await expect(page.getByText(`Facial (package: ${combo})`)).toBeVisible();
+    await expect(page.getByText('Uses a session of the package bought on this bill: nothing to pay')).toBeVisible();
+    await page.getByRole('button', { name: 'Create bill and take payment' }).click();
+    await expect(page).toHaveURL(/\/billing\/bills\/[0-9a-f-]{36}/);
+
+    const owned = await reception.get<Array<{ packageName: string; items: Array<{ serviceName: string; remaining: number }> }>>(`/customers/${booking.customerId}/packages`);
+    expect(owned[0]!.packageName).toBe(combo);
+    expect(Object.fromEntries(owned[0]!.items.map((i) => [i.serviceName, i.remaining]))).toEqual({ 'Hair Spa': 2, Facial: 0 });
   });
 });

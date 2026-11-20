@@ -189,7 +189,7 @@ function RescheduleDialog({ appointment, timezone, onClose }: { appointment: App
         version: appointment.version,
         notifyCustomer: notify,
         // The first service takes the new time (and person); later services follow right after, with their own team members.
-        items: appointment.items.map((item, i) => ({ serviceId: item.serviceId, staffId: i === 0 ? slot!.staffId : item.staffId, startAt: i === 0 ? slot!.startAt : undefined, customerPackageItemId: item.customerPackageItemId })),
+        items: appointment.items.map((item, i) => ({ serviceId: item.serviceId, staffId: i === 0 ? slot!.staffId : item.staffId, startAt: i === 0 ? slot!.startAt : undefined, customerPackageItemId: item.customerPackageItemId, buyPackageId: item.buyPackageId })),
       }),
     onSuccess: (a) => {
       refresh();

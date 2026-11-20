@@ -46,6 +46,16 @@ export const invoiceLineSchema = z.discriminatedUnion('type', [
     staffId: optionalId,
     quantity: z.literal(1).default(1),
   }),
+  /** A session of a package sold on this same bill (the package_sale line whose key is `saleKey`): nothing to pay. */
+  z.object({
+    type: z.literal('package_session'),
+    key: z.string().max(60),
+    saleKey: z.string().max(60),
+    serviceId: zId,
+    staffId: optionalId,
+    appointmentItemId: optionalId,
+    quantity: z.number().int().min(1).max(99).default(1),
+  }),
   z.object({
     type: z.literal('custom'),
     key: z.string().max(60),

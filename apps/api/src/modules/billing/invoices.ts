@@ -101,8 +101,14 @@ export async function createInvoice(tx: Tx, auth: AuthContext, input: z.output<t
     .executeTakeFirstOrThrow();
 
   const calcByKey = new Map(r.calc.lines.map((l) => [l.key, l]));
-  for (const [i, line] of r.lines.entries()) {
+  // Packages sold on this bill are created first, so sessions of them used on the same bill can point at what was
+  // just bought (sale line key → service → the customer's new package item). Line numbers keep the bill's order.
+  const soldItems = new Map<string, Map<string, string>>();
+  const salesFirst = [...r.lines.entries()].sort(([, a], [, b]) => Number(b.itemType === 'package_sale') - Number(a.itemType === 'package_sale'));
+  for (const [i, line] of salesFirst) {
     const c = calcByKey.get(line.key)!;
+    const customerPackageItemId = line.customerPackageItemId ?? (line.packageSaleKey ? soldItems.get(line.packageSaleKey)?.get(line.serviceId!) : undefined) ?? null;
+    if (line.packageSaleKey && !customerPackageItemId) throw new AppError(409, 'CONFLICT', 'A package session on this bill does not match the package sold on it.');
     const item = await tx
       .insertInto('invoiceItems')
       .values({
@@ -112,7 +118,7 @@ export async function createInvoice(tx: Tx, auth: AuthContext, input: z.output<t
         itemType: line.itemType,
         serviceId: line.serviceId,
         packageId: line.packageId,
-        customerPackageItemId: line.customerPackageItemId,
+        customerPackageItemId,
         appointmentItemId: line.appointmentItemId,
         staffId: line.staffId,
         description: line.description,
@@ -132,10 +138,10 @@ export async function createInvoice(tx: Tx, auth: AuthContext, input: z.output<t
       const used = await tx
         .updateTable('customerPackageItems')
         .set((eb) => ({ quantityUsed: eb('quantityUsed', '+', line.quantity) }))
-        .where('id', '=', line.customerPackageItemId!)
+        .where('id', '=', customerPackageItemId!)
         .returning(['customerPackageId'])
         .executeTakeFirstOrThrow();
-      await tx.insertInto('packageRedemptions').values({ organizationId: orgId, customerPackageItemId: line.customerPackageItemId!, invoiceId: invoice.id, invoiceItemId: item.id, branchId: r.branch.id, quantity: line.quantity, redeemedBy: auth.userId }).execute();
+      await tx.insertInto('packageRedemptions').values({ organizationId: orgId, customerPackageItemId: customerPackageItemId!, invoiceId: invoice.id, invoiceItemId: item.id, branchId: r.branch.id, quantity: line.quantity, redeemedBy: auth.userId }).execute();
       const left = await tx.selectFrom('customerPackageItems').select((eb) => eb.fn.sum<number>(eb('quantityTotal', '-', eb.ref('quantityUsed'))).as('left')).where('customerPackageId', '=', used.customerPackageId).executeTakeFirstOrThrow();
       if (Number(left.left) === 0) await tx.updateTable('customerPackages').set({ status: 'exhausted' }).where('id', '=', used.customerPackageId).execute();
     }
@@ -157,7 +163,8 @@ export async function createInvoice(tx: Tx, auth: AuthContext, input: z.output<t
         })
         .returning('id')
         .executeTakeFirstOrThrow();
-      await tx.insertInto('customerPackageItems').values(items.map((it) => ({ organizationId: orgId, customerPackageId: owned.id, serviceId: it.serviceId, quantityTotal: it.quantity }))).execute();
+      const ownedItems = await tx.insertInto('customerPackageItems').values(items.map((it) => ({ organizationId: orgId, customerPackageId: owned.id, serviceId: it.serviceId, quantityTotal: it.quantity }))).returning(['id', 'serviceId']).execute();
+      soldItems.set(line.key, new Map(ownedItems.map((it) => [it.serviceId, it.id])));
       await tx.updateTable('packages').set((eb) => ({ soldCount: eb('soldCount', '+', 1) })).where('id', '=', line.packageId!).execute();
     }
   }
@@ -322,7 +329,16 @@ export async function voidInvoice(tx: Tx, auth: AuthContext, invoiceId: string, 
   const sold = await tx.selectFrom('customerPackages').select(['id']).where('invoiceId', '=', invoiceId).where('status', '!=', 'cancelled').execute();
   for (const pkg of sold) {
     const used = await tx.selectFrom('customerPackageItems').select((eb) => eb.fn.sum<number>('quantityUsed').as('n')).where('customerPackageId', '=', pkg.id).executeTakeFirstOrThrow();
-    if (Number(used.n ?? 0) > 0) throw new AppError(409, 'PACKAGE_UNAVAILABLE', 'A package on this bill has already been used. Cancel the services that used it first, or post an adjustment instead.');
+    // Sessions used on this same bill (bought and used at one visit) are given back below, so they do not block it.
+    const onThisBill = await tx
+      .selectFrom('packageRedemptions as pr')
+      .innerJoin('customerPackageItems as cpi', 'cpi.id', 'pr.customerPackageItemId')
+      .select((eb) => eb.fn.sum<number>('pr.quantity').as('n'))
+      .where('cpi.customerPackageId', '=', pkg.id)
+      .where('pr.invoiceId', '=', invoiceId)
+      .where('pr.reversedAt', 'is', null)
+      .executeTakeFirstOrThrow();
+    if (Number(used.n ?? 0) - Number(onThisBill.n ?? 0) > 0) throw new AppError(409, 'PACKAGE_UNAVAILABLE', 'A package on this bill has already been used. Cancel the services that used it first, or post an adjustment instead.');
   }
 
   // Payments stay on the customer's account as advance (they can be refunded); only the allocations are undone.
@@ -372,16 +388,23 @@ export async function draftFromAppointment(tx: Tx, auth: AuthContext, appointmen
   if (a.invoiceId) throw new AppError(409, 'APPOINTMENT_ALREADY_BILLED', 'This appointment has already been billed.');
   const items = await tx
     .selectFrom('appointmentItems')
-    .select(['id', 'serviceId', 'staffId', 'customerPackageItemId'])
+    .select(['id', 'serviceId', 'staffId', 'customerPackageItemId', 'buyPackageId'])
     .where('appointmentId', '=', appointmentId)
     .where('status', '!=', 'cancelled')
     .orderBy('sortOrder')
     .execute();
-  const lines: InvoiceLineInput[] = items.map((i) =>
-    i.customerPackageItemId
-      ? { type: 'package_redemption', key: i.id, customerPackageItemId: i.customerPackageItemId, staffId: i.staffId, appointmentItemId: i.id, quantity: 1 }
-      : { type: 'service', key: i.id, serviceId: i.serviceId, staffId: i.staffId, appointmentItemId: i.id, quantity: 1 },
-  );
+  const saleKey = (packageId: string) => `package-${packageId}`;
+  const sales = [...new Set(items.flatMap((i) => (i.buyPackageId ? [i.buyPackageId] : [])))];
+  const lines: InvoiceLineInput[] = [
+    ...sales.map((packageId): InvoiceLineInput => ({ type: 'package_sale', key: saleKey(packageId), packageId, quantity: 1 })),
+    ...items.map((i): InvoiceLineInput =>
+      i.buyPackageId
+        ? { type: 'package_session', key: i.id, saleKey: saleKey(i.buyPackageId), serviceId: i.serviceId, staffId: i.staffId, appointmentItemId: i.id, quantity: 1 }
+        : i.customerPackageItemId
+          ? { type: 'package_redemption', key: i.id, customerPackageItemId: i.customerPackageItemId, staffId: i.staffId, appointmentItemId: i.id, quantity: 1 }
+          : { type: 'service', key: i.id, serviceId: i.serviceId, staffId: i.staffId, appointmentItemId: i.id, quantity: 1 },
+    ),
+  ];
   return { branchId: a.branchId, customerId: a.customerId, appointmentId: a.id, bookingNumber: a.bookingNumber, lines };
 }
 

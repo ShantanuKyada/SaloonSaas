@@ -373,6 +373,99 @@ describe('package sale dates and archiving', () => {
   });
 });
 
+describe('packages bought at the visit', () => {
+  // Hair Spa ×2 + Facial ×1 for ₹1,500 (₹3,200 if bought separately).
+  let comboId: string;
+  beforeAll(async () => {
+    const res = await owner.post('/packages').send({ code: 'VISITCMB', name: 'Glow Combo', price: 150000, validityDays: 60, items: [{ serviceId: hairSpa, quantity: 2 }, { serviceId: facial, quantity: 1 }] });
+    comboId = res.body.data.id;
+  });
+  const owned = async (customerId: string) => (await owner.get(`/customers/${customerId}/packages`)).body.data as Array<{ status: string; items: Array<{ serviceName: string; remaining: number }> }>;
+  const finish = async (id: string) => { for (const status of ['checked_in', 'in_service', 'completed']) await owner.post(`/appointments/${id}/status`).send({ status, notifyCustomer: false }); };
+
+  it('books a package, then sells it and uses its sessions on the same bill', async () => {
+    const c = await createCustomer(t, 'Combo Booker');
+    const date = bookingDate(6);
+    const booked = await owner.post('/appointments').send({ branchId: t.branchId, customerId: c, notifyCustomer: false, items: [
+      { serviceId: hairSpa, staffId: rahul, startAt: at(date, '10:00'), buyPackageId: comboId },
+      { serviceId: facial, staffId: rahul, buyPackageId: comboId },
+    ] });
+    expect(booked.status).toBe(201);
+    expect(booked.body.data.estimatedAmount).toBe(150000); // the package price, not the services
+    expect(booked.body.data.items.map((i: { price: number; buyPackageName: string }) => [i.price, i.buyPackageName])).toEqual([[0, 'Glow Combo'], [0, 'Glow Combo']]);
+
+    await finish(booked.body.data.id);
+    const draft = await owner.get(`/billing/draft-from-appointment/${booked.body.data.id}`);
+    expect(draft.body.data.lines.map((l: { type: string }) => l.type)).toEqual(['package_sale', 'package_session', 'package_session']);
+
+    const inv = await bill(c, draft.body.data.lines, { appointmentId: booked.body.data.id, payments: [{ method: 'upi', amount: 150000 }] });
+    expect(inv.status).toBe(201);
+    expect(inv.body.data).toMatchObject({ grandTotal: 150000, paymentStatus: 'paid' });
+    expect(inv.body.data.lines.map((l: { description: string; lineTotal: number }) => [l.description, l.lineTotal])).toEqual([
+      ['Package: Glow Combo', 150000],
+      ['Hair Spa (package: Glow Combo)', 0],
+      ['Facial (package: Glow Combo)', 0],
+    ]);
+    // One Hair Spa session is left for the next visit; the facial is used up.
+    let mine = await owned(c);
+    expect(mine).toHaveLength(1);
+    expect(Object.fromEntries(mine[0]!.items.map((i) => [i.serviceName, i.remaining]))).toEqual({ 'Hair Spa': 1, Facial: 0 });
+
+    // Cancelling the bill takes back the package and the sessions used with it.
+    const voided = await owner.post(`/billing/invoices/${inv.body.data.id}/void`).send({ reason: 'Entered on the wrong customer' });
+    expect(voided.status).toBe(200);
+    mine = await owned(c);
+    expect(mine[0]!.status).toBe('cancelled');
+    expect((await reconcile()).consistent).toBe(true);
+  });
+
+  it('registers a walk-in for a package and bills it the same way', async () => {
+    const c = await createCustomer(t, 'Combo Walk-in');
+    const walkIn = await owner.post('/walkins').send({ branchId: t.branchId, customerId: c, items: [{ serviceId: facial, buyPackageId: comboId }] });
+    expect(walkIn.status).toBe(201);
+    expect(walkIn.body.data.estimatedAmount).toBe(150000);
+    expect(walkIn.body.data.items[0]).toMatchObject({ price: 0, buyPackageId: comboId });
+
+    const draft = await owner.get(`/billing/draft-from-appointment/${walkIn.body.data.id}`);
+    expect(draft.body.data.lines).toMatchObject([
+      { type: 'package_sale', packageId: comboId },
+      { type: 'package_session', serviceId: facial, saleKey: draft.body.data.lines[0].key },
+    ]);
+    await owner.post(`/appointments/${walkIn.body.data.id}/status`).send({ status: 'cancelled', reason: 'Test clean-up', notifyCustomer: false });
+  });
+
+  it('refuses a package that does not cover the service, has too few sessions or is not on sale', async () => {
+    const c = await createCustomer(t, 'Combo Refusals');
+    const date = bookingDate(6);
+    const other = await createService(t, { name: 'Pedicure', code: 'PEDI', price: 50000, durationMinutes: 30 });
+    const notIncluded = await owner.post('/walkins').send({ branchId: t.branchId, customerId: c, items: [{ serviceId: other, buyPackageId: comboId }] });
+    expect(notIncluded.status).toBe(422);
+    expect(notIncluded.body.message).toMatch(/does not include/);
+
+    const tooMany = await owner.post('/walkins').send({ branchId: t.branchId, customerId: c, items: [{ serviceId: facial, buyPackageId: comboId }, { serviceId: facial, buyPackageId: comboId }] });
+    expect(tooMany.status).toBe(422);
+    expect(tooMany.body.message).toMatch(/includes 1 session of Facial/);
+
+    const later = await owner.post('/packages').send({ code: 'LATERCMB', name: 'Later Combo', price: 90000, validityDays: 30, items: [{ serviceId: facial, quantity: 1 }], saleStartsOn: futureDate(30) });
+    const early = await owner.post('/appointments').send({ branchId: t.branchId, customerId: c, notifyCustomer: false, items: [{ serviceId: facial, staffId: rahul, startAt: at(date, '17:00'), buyPackageId: later.body.data.id }] });
+    expect(early.status).toBe(422);
+    expect(early.body.message).toMatch(/goes on sale/);
+  });
+
+  it('checks a package session on a hand-made bill against the package sold on it', async () => {
+    const c = await createCustomer(t, 'Combo Counter');
+    const sale = { type: 'package_sale', key: 'sale', packageId: comboId };
+    const orphan = await bill(c, [{ type: 'package_session', key: 's', saleKey: 'nope', serviceId: facial }]);
+    expect(orphan.status).toBe(400);
+    const notIn = await bill(c, [sale, { type: 'package_session', key: 's', saleKey: 'sale', serviceId: (await createService(t, { name: 'Threading', code: 'THRD', price: 10000, durationMinutes: 10 })) }]);
+    expect(notIn.status).toBe(422);
+    const ok = await bill(c, [sale, { type: 'package_session', key: 's', saleKey: 'sale', serviceId: hairSpa, staffId: rahul, quantity: 2 }]);
+    expect(ok.status).toBe(201);
+    expect(ok.body.data.grandTotal).toBe(150000);
+    expect(Object.fromEntries((await owned(c))[0]!.items.map((i) => [i.serviceName, i.remaining]))).toEqual({ 'Hair Spa': 0, Facial: 1 });
+  });
+});
+
 describe('billing from an appointment', () => {
   it('completes a running service, bills it with the quoted price and links the bill', async () => {
     const c = await createCustomer(t, 'Appointment Bill');

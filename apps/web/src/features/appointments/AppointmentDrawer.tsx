@@ -81,7 +81,7 @@ export function AppointmentDrawer({ id, onClose }: { id: string; onClose: () => 
                       <p className="truncate text-sm font-medium text-fg">{i.serviceName}</p>
                       <p className="text-xs text-muted">{i.staffName ?? 'No team member yet'}{i.startAt ? ` · ${fmtTime(i.startAt, timezone)}` : ''} · {fmtDuration(i.durationMinutes)}</p>
                     </div>
-                    {i.customerPackageItemId ? <Badge tone="success"><Package className="size-3" aria-hidden /> Package</Badge> : <Money value={i.price} className="text-sm" />}
+                    {i.buyPackageName ? <Badge tone="success"><Package className="size-3" aria-hidden /> {i.buyPackageName} (bought at this visit)</Badge> : i.customerPackageItemId ? <Badge tone="success"><Package className="size-3" aria-hidden /> Package</Badge> : <Money value={i.price} className="text-sm" />}
                   </li>
                 ))}
               </ul>
