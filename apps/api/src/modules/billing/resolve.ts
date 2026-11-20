@@ -17,6 +17,8 @@ export interface ResolvedLine {
   categoryId: string | null;
   packageId: string | null;
   customerPackageItemId: string | null;
+  /** A session of a package sold on this same bill: the key of that package_sale line (its owned item exists only once the bill is issued). */
+  packageSaleKey: string | null;
   appointmentItemId: string | null;
   staffId: string | null;
   description: string;
@@ -95,6 +97,13 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
   const serviceIds = input.lines.flatMap((l) => (l.type === 'service' ? [l.serviceId] : []));
   const cpiIds = input.lines.flatMap((l) => (l.type === 'package_redemption' ? [l.customerPackageItemId] : []));
   const packageIds = input.lines.flatMap((l) => (l.type === 'package_sale' ? [l.packageId] : []));
+  // Sessions of packages sold on this bill: which package each sale line sells, and what that package includes.
+  const saleByKey = new Map(input.lines.flatMap((l) => (l.type === 'package_sale' ? [[l.key, l.packageId] as const] : [])));
+  const sessionServiceIds = input.lines.flatMap((l) => (l.type === 'package_session' ? [l.serviceId] : []));
+  const includedRows = sessionServiceIds.length && packageIds.length
+    ? await tx.selectFrom('packageItems as pi').innerJoin('services as s', 's.id', 'pi.serviceId').select(['pi.packageId', 'pi.serviceId', 'pi.quantity', 's.name as serviceName']).where('pi.organizationId', '=', orgId).where('pi.packageId', 'in', packageIds).execute()
+    : [];
+  const included = new Map(includedRows.map((r) => [`${r.packageId}|${r.serviceId}`, r]));
 
   const cpiRows = new Map<string, { id: string; serviceId: string; serviceName: string; quantityTotal: number; quantityUsed: number; packageName: string; status: string; expiresAt: Date; customerId: string }>();
   if (cpiIds.length) {
@@ -111,7 +120,7 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
   }
   const serviceMap = serviceIds.length ? await loadServicesForBranch(tx, orgId, branch.id, serviceIds) : new Map();
   const categoryByService = new Map<string, string>();
-  const allServiceIds = [...new Set([...serviceIds, ...[...cpiRows.values()].map((c) => c.serviceId)])];
+  const allServiceIds = [...new Set([...serviceIds, ...sessionServiceIds, ...[...cpiRows.values()].map((c) => c.serviceId)])];
   if (allServiceIds.length) {
     for (const s of await tx.selectFrom('services').select(['id', 'categoryId']).where('organizationId', '=', orgId).where('id', 'in', allServiceIds).execute()) categoryByService.set(s.id, s.categoryId);
   }
@@ -127,6 +136,7 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
 
   const lines: ResolvedLine[] = [];
   const usedCpiQty = new Map<string, number>();
+  const usedSaleQty = new Map<string, number>();
   for (const l of input.lines) {
     const staffId = ('staffId' in l ? l.staffId : null) ?? null;
     if (staffId && !staffRows.some((s) => s.id === staffId)) throw new AppError(400, 'BAD_REQUEST', 'One of the selected team members could not be found.');
@@ -143,6 +153,7 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
         categoryId: categoryByService.get(l.serviceId) ?? null,
         packageId: null,
         customerPackageItemId: null,
+        packageSaleKey: null,
         appointmentItemId: l.appointmentItemId ?? null,
         staffId: staffId ?? apptItem?.staffId ?? null,
         description: info.name,
@@ -168,6 +179,7 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
         categoryId: categoryByService.get(cpi.serviceId) ?? null,
         packageId: null,
         customerPackageItemId: cpi.id,
+        packageSaleKey: null,
         appointmentItemId: l.appointmentItemId ?? null,
         staffId: staffId ?? apptItem?.staffId ?? null,
         description: `${cpi.serviceName} (package: ${cpi.packageName})`,
@@ -188,6 +200,7 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
         categoryId: null,
         packageId: pkg.id,
         customerPackageItemId: null,
+        packageSaleKey: null,
         appointmentItemId: null,
         staffId,
         description: `Package: ${pkg.name}`,
@@ -197,6 +210,35 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
         offerEligible: false,
         discountable: true,
       });
+    } else if (l.type === 'package_session') {
+      const packageId = saleByKey.get(l.saleKey);
+      if (!packageId) throw new AppError(400, 'BAD_REQUEST', 'A package session must belong to a package sold on this bill.');
+      const pkg = packageRows.get(packageId)!;
+      const inc = included.get(`${packageId}|${l.serviceId}`);
+      if (!inc) throw new AppError(422, 'PACKAGE_UNAVAILABLE', `"${pkg.name}" does not include this service.`);
+      const usedKey = `${l.saleKey}|${l.serviceId}`;
+      const used = (usedSaleQty.get(usedKey) ?? 0) + l.quantity;
+      if (used > inc.quantity) throw new AppError(422, 'PACKAGE_UNAVAILABLE', `"${pkg.name}" includes ${inc.quantity} session${inc.quantity === 1 ? '' : 's'} of ${inc.serviceName}.`);
+      usedSaleQty.set(usedKey, used);
+      const apptItem = l.appointmentItemId ? appointmentItems.get(l.appointmentItemId) : undefined;
+      if (l.appointmentItemId && (!apptItem || apptItem.serviceId !== l.serviceId)) throw new AppError(409, 'CONFLICT', 'A service on this bill does not match the appointment.');
+      lines.push({
+        key: l.key,
+        itemType: 'package_redemption',
+        serviceId: l.serviceId,
+        categoryId: categoryByService.get(l.serviceId) ?? null,
+        packageId: null,
+        customerPackageItemId: null,
+        packageSaleKey: l.saleKey,
+        appointmentItemId: l.appointmentItemId ?? null,
+        staffId: staffId ?? apptItem?.staffId ?? null,
+        description: `${inc.serviceName} (package: ${pkg.name})`,
+        quantity: l.quantity,
+        unitPrice: 0,
+        taxRateBp: 0,
+        offerEligible: false,
+        discountable: false,
+      });
     } else {
       lines.push({
         key: l.key,
@@ -205,6 +247,7 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
         categoryId: null,
         packageId: null,
         customerPackageItemId: null,
+        packageSaleKey: null,
         appointmentItemId: null,
         staffId,
         description: l.description,
@@ -289,11 +332,11 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
   };
 }
 
-async function loadPackages(tx: Tx, orgId: string, ids: string[]) {
+export async function loadPackages(tx: Tx, orgId: string, ids: string[]) {
   return tx.selectFrom('packages').selectAll().where('organizationId', '=', orgId).where('id', 'in', ids).execute();
 }
 
-async function assertPackageSellable(tx: Tx, orgId: string, branchId: string, customerId: string, today: string, pkg: Awaited<ReturnType<typeof loadPackages>>[number], lock: boolean): Promise<void> {
+export async function assertPackageSellable(tx: Tx, orgId: string, branchId: string, customerId: string, today: string, pkg: Awaited<ReturnType<typeof loadPackages>>[number], lock: boolean): Promise<void> {
   if (lock) await tx.selectFrom('packages').select('id').where('id', '=', pkg.id).forUpdate().execute();
   const fresh = lock ? (await loadPackages(tx, orgId, [pkg.id]))[0]! : pkg;
   if (fresh.status !== 'active') throw new AppError(422, 'PACKAGE_UNAVAILABLE', `"${fresh.name}" is not available for sale.`);

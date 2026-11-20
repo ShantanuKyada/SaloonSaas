@@ -41,6 +41,7 @@ export interface AppointmentItems {
   blocksSchedule: Generated<boolean>;
   branchId: string;
   bufferMinutes: Generated<number>;
+  buyPackageId: string | null;
   createdAt: Generated<Timestamp>;
   customerPackageItemId: string | null;
   durationMinutes: number;

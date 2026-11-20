@@ -319,6 +319,153 @@ describe('packages', () => {
   });
 });
 
+describe('package sale dates and archiving', () => {
+  const create = (code: string, over: Record<string, unknown> = {}) =>
+    owner.post('/packages').send({ code, name: `Package ${code}`, price: 100000, validityDays: 30, items: [{ serviceId: facial, quantity: 1 }], ...over });
+
+  it('is only on sale between its first and last day of sale', async () => {
+    const c = await createCustomer(t, 'Window Customer');
+    const soon = await create('SOON', { saleStartsOn: futureDate(3), saleEndsOn: futureDate(10) });
+    expect(soon.status).toBe(201);
+    expect(soon.body.data.state).toBe('scheduled');
+    const over = await create('OVER', { saleStartsOn: futureDate(-10), saleEndsOn: futureDate(-1) });
+    expect(over.body.data.state).toBe('ended');
+    const now = await create('NOW', { saleStartsOn: futureDate(-1), saleEndsOn: futureDate(1) });
+    expect(now.body.data.state).toBe('on_sale');
+    const paused = await create('PAUSE', { status: 'inactive' });
+    expect(paused.body.data.state).toBe('paused');
+
+    const early = await bill(c, [{ type: 'package_sale', key: 'p', packageId: soon.body.data.id }]);
+    expect(early.status).toBe(422);
+    expect(early.body.message).toMatch(/goes on sale/);
+    const late = await bill(c, [{ type: 'package_sale', key: 'p', packageId: over.body.data.id }]);
+    expect(late.status).toBe(422);
+    expect(late.body.message).toMatch(/no longer on sale/);
+    expect((await bill(c, [{ type: 'package_sale', key: 'p', packageId: now.body.data.id }])).status).toBe(201);
+
+    const backwards = await create('BACK', { saleStartsOn: futureDate(5), saleEndsOn: futureDate(1) });
+    expect(backwards.status).toBe(400);
+    expect(backwards.body.details.issues[0].path).toBe('saleEndsOn');
+  });
+
+  it('lists archived packages and offers separately and brings them back', async () => {
+    const pkg = await create('ARCH');
+    expect((await owner.delete(`/packages/${pkg.body.data.id}`)).status).toBe(204);
+    const current = (await owner.get('/packages')).body.data as Array<{ id: string }>;
+    expect(current.map((p) => p.id)).not.toContain(pkg.body.data.id);
+    const archived = (await owner.get('/packages?archived=true')).body.data as Array<{ id: string; state: string }>;
+    expect(archived.find((p) => p.id === pkg.body.data.id)?.state).toBe('archived');
+    const back = await owner.post(`/packages/${pkg.body.data.id}/restore`);
+    expect(back.status).toBe(200);
+    expect(back.body.data).toMatchObject({ status: 'active', state: 'on_sale' });
+    expect((await owner.post(`/packages/${pkg.body.data.id}/restore`)).status).toBe(404); // nothing to restore any more
+
+    const offer = await owner.post('/offers').send({ name: 'Archive me', discountType: 'percentage', discountValue: 500, validFrom: futureDate(-1), validTo: futureDate(5) });
+    await owner.delete(`/offers/${offer.body.data.id}`);
+    const archivedOffers = (await owner.get('/offers?archived=true')).body.data as Array<{ id: string; state: string }>;
+    expect(archivedOffers.map((o) => [o.id, o.state])).toContainEqual([offer.body.data.id, 'archived']);
+    expect(((await owner.get('/offers')).body.data as Array<{ id: string }>).map((o) => o.id)).not.toContain(offer.body.data.id);
+    const restored = await owner.post(`/offers/${offer.body.data.id}/restore`);
+    expect(restored.body.data).toMatchObject({ status: 'active', state: 'running' });
+
+    const recep = await createUserWithRole(t, 'receptionist');
+    expect((await authed(recep.token).post(`/packages/${pkg.body.data.id}/restore`)).status).toBe(403);
+  });
+});
+
+describe('packages bought at the visit', () => {
+  // Hair Spa ×2 + Facial ×1 for ₹1,500 (₹3,200 if bought separately).
+  let comboId: string;
+  beforeAll(async () => {
+    const res = await owner.post('/packages').send({ code: 'VISITCMB', name: 'Glow Combo', price: 150000, validityDays: 60, items: [{ serviceId: hairSpa, quantity: 2 }, { serviceId: facial, quantity: 1 }] });
+    comboId = res.body.data.id;
+  });
+  const owned = async (customerId: string) => (await owner.get(`/customers/${customerId}/packages`)).body.data as Array<{ status: string; items: Array<{ serviceName: string; remaining: number }> }>;
+  const finish = async (id: string) => { for (const status of ['checked_in', 'in_service', 'completed']) await owner.post(`/appointments/${id}/status`).send({ status, notifyCustomer: false }); };
+
+  it('books a package, then sells it and uses its sessions on the same bill', async () => {
+    const c = await createCustomer(t, 'Combo Booker');
+    const date = bookingDate(6);
+    const booked = await owner.post('/appointments').send({ branchId: t.branchId, customerId: c, notifyCustomer: false, items: [
+      { serviceId: hairSpa, staffId: rahul, startAt: at(date, '10:00'), buyPackageId: comboId },
+      { serviceId: facial, staffId: rahul, buyPackageId: comboId },
+    ] });
+    expect(booked.status).toBe(201);
+    expect(booked.body.data.estimatedAmount).toBe(150000); // the package price, not the services
+    expect(booked.body.data.items.map((i: { price: number; buyPackageName: string }) => [i.price, i.buyPackageName])).toEqual([[0, 'Glow Combo'], [0, 'Glow Combo']]);
+
+    await finish(booked.body.data.id);
+    const draft = await owner.get(`/billing/draft-from-appointment/${booked.body.data.id}`);
+    expect(draft.body.data.lines.map((l: { type: string }) => l.type)).toEqual(['package_sale', 'package_session', 'package_session']);
+
+    const inv = await bill(c, draft.body.data.lines, { appointmentId: booked.body.data.id, payments: [{ method: 'upi', amount: 150000 }] });
+    expect(inv.status).toBe(201);
+    expect(inv.body.data).toMatchObject({ grandTotal: 150000, paymentStatus: 'paid' });
+    expect(inv.body.data.lines.map((l: { description: string; lineTotal: number }) => [l.description, l.lineTotal])).toEqual([
+      ['Package: Glow Combo', 150000],
+      ['Hair Spa (package: Glow Combo)', 0],
+      ['Facial (package: Glow Combo)', 0],
+    ]);
+    // One Hair Spa session is left for the next visit; the facial is used up.
+    let mine = await owned(c);
+    expect(mine).toHaveLength(1);
+    expect(Object.fromEntries(mine[0]!.items.map((i) => [i.serviceName, i.remaining]))).toEqual({ 'Hair Spa': 1, Facial: 0 });
+
+    // Cancelling the bill takes back the package and the sessions used with it.
+    const voided = await owner.post(`/billing/invoices/${inv.body.data.id}/void`).send({ reason: 'Entered on the wrong customer' });
+    expect(voided.status).toBe(200);
+    mine = await owned(c);
+    expect(mine[0]!.status).toBe('cancelled');
+    expect((await reconcile()).consistent).toBe(true);
+  });
+
+  it('registers a walk-in for a package and bills it the same way', async () => {
+    const c = await createCustomer(t, 'Combo Walk-in');
+    const walkIn = await owner.post('/walkins').send({ branchId: t.branchId, customerId: c, items: [{ serviceId: facial, buyPackageId: comboId }] });
+    expect(walkIn.status).toBe(201);
+    expect(walkIn.body.data.estimatedAmount).toBe(150000);
+    expect(walkIn.body.data.items[0]).toMatchObject({ price: 0, buyPackageId: comboId });
+
+    const draft = await owner.get(`/billing/draft-from-appointment/${walkIn.body.data.id}`);
+    expect(draft.body.data.lines).toMatchObject([
+      { type: 'package_sale', packageId: comboId },
+      { type: 'package_session', serviceId: facial, saleKey: draft.body.data.lines[0].key },
+    ]);
+    await owner.post(`/appointments/${walkIn.body.data.id}/status`).send({ status: 'cancelled', reason: 'Test clean-up', notifyCustomer: false });
+  });
+
+  it('refuses a package that does not cover the service, has too few sessions or is not on sale', async () => {
+    const c = await createCustomer(t, 'Combo Refusals');
+    const date = bookingDate(6);
+    const other = await createService(t, { name: 'Pedicure', code: 'PEDI', price: 50000, durationMinutes: 30 });
+    const notIncluded = await owner.post('/walkins').send({ branchId: t.branchId, customerId: c, items: [{ serviceId: other, buyPackageId: comboId }] });
+    expect(notIncluded.status).toBe(422);
+    expect(notIncluded.body.message).toMatch(/does not include/);
+
+    const tooMany = await owner.post('/walkins').send({ branchId: t.branchId, customerId: c, items: [{ serviceId: facial, buyPackageId: comboId }, { serviceId: facial, buyPackageId: comboId }] });
+    expect(tooMany.status).toBe(422);
+    expect(tooMany.body.message).toMatch(/includes 1 session of Facial/);
+
+    const later = await owner.post('/packages').send({ code: 'LATERCMB', name: 'Later Combo', price: 90000, validityDays: 30, items: [{ serviceId: facial, quantity: 1 }], saleStartsOn: futureDate(30) });
+    const early = await owner.post('/appointments').send({ branchId: t.branchId, customerId: c, notifyCustomer: false, items: [{ serviceId: facial, staffId: rahul, startAt: at(date, '17:00'), buyPackageId: later.body.data.id }] });
+    expect(early.status).toBe(422);
+    expect(early.body.message).toMatch(/goes on sale/);
+  });
+
+  it('checks a package session on a hand-made bill against the package sold on it', async () => {
+    const c = await createCustomer(t, 'Combo Counter');
+    const sale = { type: 'package_sale', key: 'sale', packageId: comboId };
+    const orphan = await bill(c, [{ type: 'package_session', key: 's', saleKey: 'nope', serviceId: facial }]);
+    expect(orphan.status).toBe(400);
+    const notIn = await bill(c, [sale, { type: 'package_session', key: 's', saleKey: 'sale', serviceId: (await createService(t, { name: 'Threading', code: 'THRD', price: 10000, durationMinutes: 10 })) }]);
+    expect(notIn.status).toBe(422);
+    const ok = await bill(c, [sale, { type: 'package_session', key: 's', saleKey: 'sale', serviceId: hairSpa, staffId: rahul, quantity: 2 }]);
+    expect(ok.status).toBe(201);
+    expect(ok.body.data.grandTotal).toBe(150000);
+    expect(Object.fromEntries((await owned(c))[0]!.items.map((i) => [i.serviceName, i.remaining]))).toEqual({ 'Hair Spa': 0, Facial: 1 });
+  });
+});
+
 describe('billing from an appointment', () => {
   it('completes a running service, bills it with the quoted price and links the bill', async () => {
     const c = await createCustomer(t, 'Appointment Bill');

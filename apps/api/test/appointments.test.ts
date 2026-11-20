@@ -291,3 +291,25 @@ describe('data isolation', () => {
     expect([403, 404]).toContain(ledger.status);
   });
 });
+
+describe('quick add customers', () => {
+  it('adds a customer from just a name and mobile number, at the branch the receptionist is working in', async () => {
+    const branch = await createBranch(t, 'Quick Branch', 'QCK');
+    const res = await owner.post('/customers/quick').send({ fullName: 'Asha Quick', mobile: '98123 00001', branchId: branch });
+    expect(res.status).toBe(201);
+    expect(res.body.data).toMatchObject({ fullName: 'Asha Quick', registeredBranchId: branch, gender: 'unspecified', email: null, dateOfBirth: null });
+    expect(res.body.data.mobile).toMatch(/9812300001$/);
+
+    const again = await owner.post('/customers/quick').send({ fullName: 'Someone Else', mobile: '9812300001' });
+    expect(again.status).toBe(409);
+    expect(again.body.details.existing.fullName).toBe('Asha Quick');
+  });
+
+  it('refuses a branch the user does not work at', async () => {
+    const other = await createBranch(t, 'Far Branch', 'FAR');
+    const receptionist = await createUserWithRole(t, 'receptionist', { branchIds: [t.branchId] });
+    const res = await authed(receptionist.token).post('/customers/quick').send({ fullName: 'Wrong Branch', mobile: '9812300002', branchId: other });
+    expect(res.status).toBe(403);
+    expect(res.body.errorCode).toBe('BRANCH_ACCESS_DENIED');
+  });
+});

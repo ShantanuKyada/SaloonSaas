@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { USERS, apiAs, arrangeBooking, signInAs, type Api, type Arranged } from './helpers';
+import { USERS, apiAs, arrangeBooking, signInAs, uniqueMobile, uniqueName, type Api, type Arranged } from './helpers';
 
 /** Takes a booked appointment through to "completed" through the API so billing tests start where billing starts. */
 async function completed(api: Api, booking: Arranged): Promise<void> {
@@ -30,6 +30,20 @@ test.describe('Billing, credit and collections', () => {
 
     let customer = await api.get<{ account: { outstanding: number } }>(`/customers/${booking.customerId}/360`);
     expect(customer.account.outstanding).toBe(invoice.grandTotal);
+
+    // Collect payment lists only people who owe money; anyone else is one click away (to take an advance)
+    const noDebt = uniqueName('E2E Paid Up');
+    await api.post('/customers', { fullName: noDebt, mobile: uniqueMobile() });
+    await page.goto('/billing/collect');
+    const pendingList = page.getByRole('list', { name: 'Customers with pending payments' });
+    const find = page.getByRole('searchbox', { name: 'Find a customer with a pending payment' });
+    await find.fill(booking.customerName);
+    await expect(pendingList.getByRole('button', { name: new RegExp(booking.customerName) })).toBeVisible();
+    await find.fill(noDebt);
+    await expect(page.getByText(`Nobody matching “${noDebt}” has a pending payment.`)).toBeVisible();
+    await page.getByRole('button', { name: 'Taking an advance? Find any customer' }).click();
+    await page.getByRole('searchbox', { name: /Find customer/i }).fill(noDebt);
+    await expect(page.getByRole('button', { name: new RegExp(`^${noDebt}`) })).toBeVisible();
 
     // Collect the whole amount in cash
     await page.goto(`/billing/collect?customerId=${booking.customerId}&invoiceId=${invoiceId}`);

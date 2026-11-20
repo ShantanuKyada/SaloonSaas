@@ -61,6 +61,7 @@ export async function loadAppointmentDtos(tx: Tx, auth: AuthContext, orgId: stri
     .innerJoin('services as s', 's.id', 'ai.serviceId')
     .innerJoin('serviceCategories as sc', 'sc.id', 's.categoryId')
     .leftJoin('staff as st', 'st.id', 'ai.staffId')
+    .leftJoin('packages as bp', 'bp.id', 'ai.buyPackageId')
     .select([
       'ai.id',
       'ai.appointmentId',
@@ -77,6 +78,8 @@ export async function loadAppointmentDtos(tx: Tx, auth: AuthContext, orgId: stri
       'ai.price',
       'ai.status',
       'ai.customerPackageItemId',
+      'ai.buyPackageId',
+      'bp.name as buyPackageName',
     ])
     .where('ai.appointmentId', 'in', ids.length ? ids : [NO_MATCH])
     .orderBy('ai.sortOrder')
@@ -105,6 +108,8 @@ export async function loadAppointmentDtos(tx: Tx, auth: AuthContext, orgId: stri
           price: i.price,
           status: i.status,
           customerPackageItemId: i.customerPackageItemId,
+          buyPackageId: i.buyPackageId,
+          buyPackageName: i.buyPackageName,
         }));
       const customer = maskContact({ mobile: a.customerMobile }, visible);
       return {

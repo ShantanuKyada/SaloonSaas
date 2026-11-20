@@ -6,6 +6,7 @@ import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { Money, useMoney } from '@/components/common/badges';
 import { CustomerPicker, toPicked, useCustomer360, type PickedCustomer } from '@/components/common/CustomerPicker';
+import { PackageChooser, useVisitPackages } from '@/components/common/PackageChooser';
 import { ServicePicker } from '@/components/common/ServicePicker';
 import { Button } from '@/components/ui/button';
 import { Badge, InlineNotice } from '@/components/ui/display';
@@ -68,10 +69,16 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
   const usualIds = useMemo(() => [picked?.favoriteServiceId, picked?.suggestion?.serviceId].filter((v): v is string => !!v), [picked]);
   const preferredStaffId = picked?.preferredStaffId ?? picked?.suggestion?.staffId ?? null;
 
-  const toggleService = (id: string) => {
-    setServiceIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  // Packages and combos bought at this visit (sold on its bill; the services they cover use their sessions).
+  const visitPackages = useVisitPackages(serviceIds, setServiceIds);
+  const servicesChanged = () => {
     setSlot((s) => (prefill.startAt && prefill.staffId ? s : null));
     setSeparate(false);
+  };
+  const toggleService = (id: string) => {
+    if (serviceIds.includes(id)) visitPackages.forget(id);
+    setServiceIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+    servicesChanged();
   };
 
   // Together: everyone qualified for ALL services. Separate: only the first service decides the starting time.
@@ -147,7 +154,8 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
           serviceId,
           staffId: staffForLine(i)!,
           startAt: i === 0 ? slot!.startAt : undefined,
-          customerPackageItemId: pkg && usePackage[serviceId] !== false ? pkg.itemId : undefined,
+          customerPackageItemId: !visitPackages.buyPackage[serviceId] && pkg && usePackage[serviceId] !== false ? pkg.itemId : undefined,
+          buyPackageId: visitPackages.buyPackage[serviceId],
         };
       });
       return api.post<AppointmentDto>('/appointments', { branchId, customerId, source, status: confirmed ? 'confirmed' : 'scheduled', notes: notes || null, internalNotes: internalNotes || null, items, notifyCustomer: notify, allowOutsideHours: allowOutside });
@@ -167,7 +175,8 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
   const err = create.error ? friendlyError(create.error) : null;
   const startForSummary = slot?.startAt;
   const endForSummary = startForSummary ? new Date(new Date(startForSummary).getTime() + totalMinutes * 60_000).toISOString() : null;
-  const estimate = serviceIds.reduce((a, id) => a + (packageFor(id) && usePackage[id] !== false ? 0 : (lookup.get(id)?.price ?? 0)), 0);
+  const paidByPackage = (id: string) => !!visitPackages.buyPackage[id] || (!!packageFor(id) && usePackage[id] !== false);
+  const estimate = serviceIds.reduce((a, id) => a + (paidByPackage(id) ? 0 : (lookup.get(id)?.price ?? 0)), 0) + visitPackages.total;
   const quickDates = [0, 1, 2].map((d) => addDaysTo(todayIn(tz), d));
 
   return (
@@ -208,7 +217,7 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
 
         {branches.length > 1 && !prefill.branchId && (
           <Field label="Branch">
-            <Select value={branchId} onChange={(e) => { setBranchId(e.target.value); setSlot(null); setServiceIds([]); }}>
+            <Select value={branchId} onChange={(e) => { setBranchId(e.target.value); setSlot(null); setServiceIds([]); visitPackages.reset(); }}>
               {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </Select>
           </Field>
@@ -226,10 +235,11 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
 
         <section className={SECTION}>
           <H n={2}>Services</H>
+          <PackageChooser branchId={branchId} chosen={visitPackages.chosen} onToggle={(pkg) => { visitPackages.toggle(pkg); servicesChanged(); }} />
           {services.isLoading ? <div className="skeleton h-40" /> : <ServicePicker services={services.data ?? []} selected={serviceIds} onToggle={toggleService} usualIds={usualIds} />}
-          {serviceIds.some((id) => packageFor(id)) && (
+          {serviceIds.some((id) => packageFor(id) && !visitPackages.buyPackage[id]) && (
             <div className="space-y-2 rounded-xl border border-success/30 bg-success-soft p-3">
-              {serviceIds.filter((id) => packageFor(id)).map((id) => {
+              {serviceIds.filter((id) => packageFor(id) && !visitPackages.buyPackage[id]).map((id) => {
                 const pkg = packageFor(id)!;
                 return (
                   <Checkbox key={id} checked={usePackage[id] !== false} onCheckedChange={(v) => setUsePackage((p) => ({ ...p, [id]: v }))} label={<span className="inline-flex items-center gap-1.5"><Package className="size-4" aria-hidden />Use package for {lookup.get(id)?.name}</span>} description={`${pkg.packageName} — ${pkg.remaining} session${pkg.remaining === 1 ? '' : 's'} left. Nothing to pay for this service.`} />

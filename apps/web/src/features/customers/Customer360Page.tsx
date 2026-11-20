@@ -20,6 +20,12 @@ import CustomerFormModal from './CustomerFormModal';
 
 const WEEKDAYS = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
+/** A customer quick-added at the desk (name and mobile only), whose other details are still to be filled in. */
+function onlyBasics(c: Customer360['customer']): boolean {
+  if (c.contactMasked) return false; // email and WhatsApp are hidden for this role, so we cannot tell
+  return c.gender === 'unspecified' && ![c.email, c.whatsappNumber, c.dateOfBirth, c.anniversaryDate, c.address, c.city, c.notes, c.preferredStaffId].some(Boolean);
+}
+
 export function Component() {
   const { id } = useParams();
   const q = useCustomer360(id);
@@ -69,6 +75,12 @@ export function Component() {
         <Badge tone={customer.marketingConsent ? 'success' : 'neutral'}>{customer.marketingConsent ? 'OK to send offers' : 'No offers (no consent)'}</Badge>
         {customer.contactMasked && <Badge tone="warning">Contact details hidden for your role</Badge>}
       </div>
+
+      {can('customers.update') && onlyBasics(customer) && (
+        <InlineNotice tone="info" title="Only a name and mobile number so far" action={<Button size="sm" variant="outline" icon={<Pencil className="size-4" />} onClick={() => setEditing(true)}>Add details</Button>}>
+          Add their gender, email, birthday and preferences when there is a moment.
+        </InlineNotice>
+      )}
 
       {account.outstanding > 0 && (
         <InlineNotice tone="warning" title={<span><Money value={account.outstanding} /> pending</span>} action={can('payments.collect') ? <Link to={`/billing/collect?customerId=${customer.id}`} className="text-sm font-semibold underline">Collect payment</Link> : undefined}>

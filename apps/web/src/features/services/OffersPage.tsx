@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { OFFER_ELIGIBILITY, OFFER_ELIGIBILITY_LABELS, OFFER_SCOPES, WEEKDAYS, WEEKDAY_SHORT, offerSchema, type OfferEligibility, type OfferScope } from '@salon/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, MoreHorizontal, Pencil, Plus, X } from 'lucide-react';
+import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Plus, X } from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -47,7 +47,7 @@ export interface OfferRow {
   usageLimitPerCustomer: number | null;
   usageCount: number;
   status: string;
-  state: 'running' | 'scheduled' | 'expired' | 'used_up' | 'inactive';
+  state: 'running' | 'scheduled' | 'expired' | 'used_up' | 'inactive' | 'archived';
   serviceIds: string[];
   categoryIds: string[];
   branchIds: string[];
@@ -60,6 +60,7 @@ const STATE: Record<OfferRow['state'], { label: string; tone: Tone }> = {
   expired: { label: 'Ended', tone: 'neutral' },
   used_up: { label: 'Fully used', tone: 'warning' },
   inactive: { label: 'Paused', tone: 'neutral' },
+  archived: { label: 'Archived', tone: 'neutral' },
 };
 const SCOPE_LABEL: Record<OfferScope, string> = { all_services: 'Every service', services: 'Chosen services', categories: 'Whole categories', combo: 'Combo (all chosen services together)' };
 
@@ -70,8 +71,11 @@ export function Component() {
   const client = useQueryClient();
   const { timezone } = useBranch();
   const [editing, setEditing] = useState<OfferRow | 'new' | null>(null);
-  const q = useQuery({ queryKey: qk.offers, queryFn: () => api.get<OfferRow[]>('/offers') });
-  const archive = useMutation({ mutationFn: (id: string) => api.delete(`/offers/${id}`), onSuccess: () => { void client.invalidateQueries({ queryKey: qk.offers }); toast.success('Offer archived'); }, onError: toastError });
+  const [view, setView] = useState<'current' | 'archived'>('current');
+  const archived = view === 'archived';
+  const q = useQuery({ queryKey: archived ? [...qk.offers, 'archived'] : qk.offers, queryFn: () => api.get<OfferRow[]>('/offers', archived ? { archived: 'true' } : undefined) });
+  const archive = useMutation({ mutationFn: (o: OfferRow) => api.delete(`/offers/${o.id}`), onSuccess: (_, o) => { void client.invalidateQueries({ queryKey: qk.offers }); toast.success(`${o.name} archived`, { description: 'Find it under Archived to bring it back.' }); }, onError: toastError });
+  const restore = useMutation({ mutationFn: (o: OfferRow) => api.post<OfferRow>(`/offers/${o.id}/restore`), onSuccess: (o) => { void client.invalidateQueries({ queryKey: qk.offers }); toast.success(`${o.name} restored`, { description: STATE[o.state].label }); }, onError: toastError });
   const describe = (o: OfferRow) => (o.discountType === 'percentage' ? `${o.discountValue / 100}% off` : `${money(o.discountValue)} off`);
 
   return (
@@ -79,7 +83,10 @@ export function Component() {
       <PageHeader title="Offers" description="Discounts that apply automatically or with a code at the time of billing." actions={manage && <Button icon={<Plus className="size-4" />} onClick={() => setEditing('new')}>Create offer</Button>} />
       {q.isLoading && <div role="status" aria-label="Loading offers" className="grid gap-3 md:grid-cols-2"><Skeleton className="h-36" /><Skeleton className="h-36" /></div>}
       {q.isError && <ErrorState error={q.error} onRetry={() => void q.refetch()} />}
-      {q.data && q.data.length === 0 && <Card><EmptyState title="No offers yet" description="Create a festival discount, a first-visit welcome or a loyalty reward." action={manage && <Button onClick={() => setEditing('new')}>Create offer</Button>} /></Card>}
+      <div className="mb-4"><Segmented label="Which offers" value={view} onChange={setView} options={[{ value: 'current', label: 'Current' }, { value: 'archived', label: 'Archived' }]} /></div>
+      {q.data && q.data.length === 0 && (archived
+        ? <Card><EmptyState title="No archived offers" description="Offers you archive appear here, so you can bring them back." /></Card>
+        : <Card><EmptyState title="No offers yet" description="Create a festival discount, a first-visit welcome or a loyalty reward." action={manage && <Button onClick={() => setEditing('new')}>Create offer</Button>} /></Card>)}
       <ul className="grid gap-3 md:grid-cols-2">
         {q.data?.map((o) => (
           <li key={o.id}>
@@ -93,10 +100,11 @@ export function Component() {
                   {o.code && <p className="mt-2 inline-block rounded-md bg-surface-2 px-2 py-1 font-mono text-xs">Code: {o.code}</p>}
                   <p className="mt-2 text-xs text-muted">Used {o.usageCount}{o.usageLimitTotal ? ` of ${o.usageLimitTotal}` : ''} times</p>
                 </div>
-                {manage && (
+                {manage && archived && <Button size="sm" variant="outline" icon={<ArchiveRestore className="size-4" />} loading={restore.isPending && restore.variables?.id === o.id} onClick={() => restore.mutate(o)}>Restore</Button>}
+                {manage && !archived && (
                   <Menu label={`Actions for ${o.name}`} trigger={<IconButton label={`Actions for ${o.name}`} size="sm"><MoreHorizontal className="size-5" /></IconButton>} items={[
                     { label: 'Edit', icon: <Pencil className="size-4" />, onSelect: () => setEditing(o) },
-                    { label: 'Archive', icon: <Archive className="size-4" />, tone: 'danger', onSelect: async () => { if (await confirm({ title: `Archive “${o.name}”?`, body: 'It stops applying to new bills straight away. Bills that already used it are not changed.', confirmLabel: 'Archive offer', cancelLabel: 'Keep offer', tone: 'danger' })) archive.mutate(o.id); } },
+                    { label: 'Archive', icon: <Archive className="size-4" />, tone: 'danger', onSelect: async () => { if (await confirm({ title: `Archive “${o.name}”?`, body: 'It stops applying to new bills straight away. Bills that already used it are not changed. You can bring it back from Archived.', confirmLabel: 'Archive offer', cancelLabel: 'Keep offer', tone: 'danger' })) archive.mutate(o); } },
                   ]} />
                 )}
               </div>

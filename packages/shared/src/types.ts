@@ -286,6 +286,9 @@ export interface AppointmentItemDto {
   price: number;
   status: string;
   customerPackageItemId: string | null;
+  /** Paid by a package bought at this visit (sold on its bill). */
+  buyPackageId: string | null;
+  buyPackageName: string | null;
 }
 
 export interface AppointmentDto {

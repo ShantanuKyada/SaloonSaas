@@ -21,7 +21,7 @@ import { createCustomerRecord, refreshCustomerStats } from '../customers/service
 import { computeAvailability, type Interval } from '../scheduling/engine.js';
 import { effectiveBuffer, loadDayContext, loadServicesForBranch, loadStaffDays } from '../scheduling/loader.js';
 import { cancelAppointmentReminders, queueAppointmentMessages } from './messages.js';
-import { planItems, summarizePlans, type ExistingItem, type ItemPlan } from './planner.js';
+import { checkPackagesBought, planItems, summarizePlans, type ExistingItem, type ItemPlan } from './planner.js';
 
 const MINUTE = 60_000;
 const BLOCKING: AppointmentStatus[] = ['scheduled', 'confirmed', 'checked_in', 'in_service', 'completed'];
@@ -87,6 +87,7 @@ async function insertItems(tx: Tx, orgId: string, branchId: string, appointmentI
         bufferMinutes: p.bufferMinutes,
         price: p.price,
         customerPackageItemId: p.customerPackageItemId,
+        buyPackageId: p.buyPackageId,
         blocksSchedule: blocks && p.staffId !== null && p.startAt !== null,
       })),
     )
@@ -154,8 +155,8 @@ export async function createAppointment(tx: Tx, auth: AuthContext, input: Create
 }
 
 // ───────────── Edit / move ─────────────
-const signature = (items: Array<{ serviceId: string; staffId: string | null; startAt: Date | null; durationMinutes: number }>) =>
-  items.map((i) => `${i.serviceId}|${i.staffId}|${i.startAt?.getTime() ?? 'x'}|${i.durationMinutes}`).join(',');
+const signature = (items: Array<{ serviceId: string; staffId: string | null; startAt: Date | null; durationMinutes: number; customerPackageItemId: string | null; buyPackageId: string | null }>) =>
+  items.map((i) => `${i.serviceId}|${i.staffId}|${i.startAt?.getTime() ?? 'x'}|${i.durationMinutes}|${i.customerPackageItemId ?? ''}|${i.buyPackageId ?? ''}`).join(',');
 
 async function applyItemChange(
   tx: Tx,
@@ -165,7 +166,7 @@ async function applyItemChange(
   settings: OrgSettings,
   a: AppointmentRow,
   items: AppointmentItemInput[],
-  opts: { allowOutsideHours: boolean; notifyCustomer: boolean },
+  opts: { allowOutsideHours: boolean; notifyCustomer: boolean; checkPackageSale: boolean },
 ): Promise<{ rescheduled: boolean }> {
   if (a.invoiceId) throw new AppError(409, 'APPOINTMENT_ALREADY_BILLED', 'This appointment has already been billed, so its services cannot be changed.');
   if (['completed', 'cancelled', 'no_show'].includes(a.status)) {
@@ -173,7 +174,7 @@ async function applyItemChange(
   }
   const existing = await tx
     .selectFrom('appointmentItems')
-    .select(['serviceId', 'staffId', 'startAt', 'durationMinutes', 'sortOrder'])
+    .select(['serviceId', 'staffId', 'startAt', 'durationMinutes', 'sortOrder', 'customerPackageItemId', 'buyPackageId'])
     .where('appointmentId', '=', a.id)
     .orderBy('sortOrder')
     .execute();
@@ -188,10 +189,12 @@ async function applyItemChange(
     allowOutsideHours: opts.allowOutsideHours,
     allowPast: ['checked_in', 'in_service'].includes(a.status),
     existing: existingItems,
+    // A package newly chosen for this visit must be on sale; one agreed earlier is kept as it was.
+    checkPackageSale: opts.checkPackageSale || items.some((i) => i.buyPackageId && !existing.some((e) => e.buyPackageId === i.buyPackageId)),
   });
   const sum = summarizePlans(plans);
   const before = signature(existing);
-  const after = signature(plans.map((p) => ({ serviceId: p.serviceId, staffId: p.staffId, startAt: p.startAt, durationMinutes: p.durationMinutes })));
+  const after = signature(plans);
   const servicesChanged = existing.map((e) => e.serviceId).join() !== plans.map((p) => p.serviceId).join();
   const staffChanged = existing.map((e) => e.staffId).join() !== plans.map((p) => p.staffId).join();
   const timeChanged = existing.map((e) => e.startAt?.getTime()).join() !== plans.map((p) => p.startAt!.getTime()).join();
@@ -247,6 +250,7 @@ export async function updateAppointment(tx: Tx, auth: AuthContext, id: string, i
     await applyItemChange(tx, auth, orgId, branch, settings, { ...a, customerId: input.customerId ?? a.customerId }, input.items, {
       allowOutsideHours: overrideHours(auth, settings, input.allowOutsideHours ?? false),
       notifyCustomer: input.notifyCustomer ?? true,
+      checkPackageSale: false, // only packages newly added to the visit are checked (see applyItemChange)
     });
   }
 
@@ -270,7 +274,7 @@ export async function moveAppointment(tx: Tx, auth: AuthContext, id: string, inp
   const [branch, settings] = await Promise.all([loadBranch(tx, orgId, a.branchId), loadSettings(tx, orgId)]);
   const rows = await tx
     .selectFrom('appointmentItems')
-    .select(['id', 'serviceId', 'staffId', 'startAt', 'durationMinutes', 'customerPackageItemId'])
+    .select(['id', 'serviceId', 'staffId', 'startAt', 'durationMinutes', 'customerPackageItemId', 'buyPackageId'])
     .where('appointmentId', '=', id)
     .orderBy('sortOrder')
     .execute();
@@ -286,11 +290,13 @@ export async function moveAppointment(tx: Tx, auth: AuthContext, id: string, inp
       startAt: isDragged ? input.startAt : r.startAt.toISOString(),
       durationMinutes: isDragged && input.durationMinutes ? input.durationMinutes : r.durationMinutes,
       customerPackageItemId: r.customerPackageItemId,
+      buyPackageId: r.buyPackageId,
     };
   });
   const { rescheduled } = await applyItemChange(tx, auth, orgId, branch, settings, a, items, {
     allowOutsideHours: overrideHours(auth, settings, input.allowOutsideHours ?? false),
     notifyCustomer: input.notifyCustomer ?? true,
+    checkPackageSale: false,
   });
   await tx.updateTable('appointments').set({ updatedBy: auth.userId || null, version: a.version + 1 }).where('id', '=', id).execute();
   await audit(tx, auth, {
@@ -383,12 +389,12 @@ export async function changeStatus(tx: Tx, auth: AuthContext, id: string, input:
     const branch = await loadBranch(tx, orgId, a.branchId);
     const rows = await tx
       .selectFrom('appointmentItems')
-      .select(['serviceId', 'staffId', 'startAt', 'durationMinutes', 'customerPackageItemId'])
+      .select(['serviceId', 'staffId', 'startAt', 'durationMinutes', 'customerPackageItemId', 'buyPackageId'])
       .where('appointmentId', '=', id)
       .orderBy('sortOrder')
       .execute();
-    const items: AppointmentItemInput[] = rows.map((r) => ({ serviceId: r.serviceId, staffId: r.staffId!, startAt: r.startAt!.toISOString(), durationMinutes: r.durationMinutes, customerPackageItemId: r.customerPackageItemId }));
-    await planItems(tx, items, { orgId, branch, settings, customerId: a.customerId, excludeAppointmentId: id, allowOutsideHours: true, allowPast: true });
+    const items: AppointmentItemInput[] = rows.map((r) => ({ serviceId: r.serviceId, staffId: r.staffId!, startAt: r.startAt!.toISOString(), durationMinutes: r.durationMinutes, customerPackageItemId: r.customerPackageItemId, buyPackageId: r.buyPackageId }));
+    await planItems(tx, items, { orgId, branch, settings, customerId: a.customerId, excludeAppointmentId: id, allowOutsideHours: true, allowPast: true, checkPackageSale: false });
     await tx.updateTable('appointmentItems').set({ status: 'pending', blocksSchedule: true }).where('appointmentId', '=', id).execute();
     await addEvent(tx, auth, orgId, id, 'restored', null, { from, to });
   }
@@ -468,6 +474,7 @@ export async function createWalkIn(tx: Tx, auth: AuthContext, input: CreateWalkI
     ? await tx.selectFrom('staffServices').select(['staffId', 'serviceId', 'durationMinutes']).where('staffId', 'in', staffIds).where('isActive', '=', true).execute()
     : [];
   const today = todayIn(branch.timezone);
+  const bought = await checkPackagesBought(tx, { orgId, branchId: branch.id, customerId, date: today, checkSale: true }, input.items);
   const bookingNumber = await nextBookingNumber(tx, orgId, settings.bookingPrefix, today);
   const queueNumber = await nextQueueNumber(tx, orgId, branch.id, today);
 
@@ -493,7 +500,7 @@ export async function createWalkIn(tx: Tx, auth: AuthContext, input: CreateWalkI
       localDate: today,
       queueNumber,
       totalDurationMinutes: lines.reduce((a, l) => a + l.duration, 0),
-      estimatedAmount: lines.reduce((a, l) => a + l.service.price, 0),
+      estimatedAmount: lines.reduce((a, l) => a + (l.item.buyPackageId ? 0 : l.service.price), 0) + [...bought.values()].reduce((a, p) => a + p.price, 0),
       notes: input.notes ?? null,
       arrivedAt: new Date(),
       createdBy: auth.userId,
@@ -513,7 +520,8 @@ export async function createWalkIn(tx: Tx, auth: AuthContext, input: CreateWalkI
         sortOrder: l.index,
         durationMinutes: l.duration,
         bufferMinutes: effectiveBuffer([l.service], settings),
-        price: l.service.price,
+        price: l.item.buyPackageId ? 0 : l.service.price,
+        buyPackageId: l.item.buyPackageId ?? null,
         blocksSchedule: false,
       })),
     )
@@ -580,13 +588,13 @@ export async function assignWalkIn(tx: Tx, auth: AuthContext, id: string, input:
       if (slot === undefined) throw new AppError(422, 'STAFF_UNAVAILABLE', `${staffDay.displayName} has no free time left today. Choose another team member.`, { staffId });
       start = slot;
     }
-    planInput.push({ serviceId: row.serviceId, staffId, startAt: new Date(start).toISOString(), durationMinutes: row.durationMinutes, customerPackageItemId: row.customerPackageItemId });
+    planInput.push({ serviceId: row.serviceId, staffId, startAt: new Date(start).toISOString(), durationMinutes: row.durationMinutes, customerPackageItemId: row.customerPackageItemId, buyPackageId: row.buyPackageId });
     const end = start + row.durationMinutes * MINUTE;
     extraBusy.set(staffId, [...(extraBusy.get(staffId) ?? []), { start, end: end + buffer * MINUTE }]);
     cursor = end + buffer * MINUTE;
   }
 
-  const plans = await planItems(tx, planInput, { orgId, branch, settings, customerId: a.customerId, excludeAppointmentId: id, allowOutsideHours: false, allowPast: true });
+  const plans = await planItems(tx, planInput, { orgId, branch, settings, customerId: a.customerId, excludeAppointmentId: id, allowOutsideHours: false, allowPast: true, checkPackageSale: false });
   for (const [i, row] of rows.entries()) {
     const p = plans[i]!;
     await tx

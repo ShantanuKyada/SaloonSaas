@@ -13,7 +13,7 @@ import {
 import { sql } from 'kysely';
 import { z } from 'zod';
 import { audit } from '../../core/audit.js';
-import { hasPermission, nonEmpty, requireOrgId } from '../../core/auth-context.js';
+import { assertBranchAccess, hasPermission, nonEmpty, requireOrgId } from '../../core/auth-context.js';
 import type { Tx } from '../../db/tenant.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { createRouter, FileResponse, paged } from '../../core/router.js';
@@ -501,7 +501,8 @@ r.post('/quick', { summary: 'Quick add (name + mobile) from booking, walk-in or 
   tx(async (t) => {
     const orgId = requireOrgId(auth);
     const org = await loadOrg(t, orgId);
-    const id = await createCustomerRecord(t, auth, org, body, { registeredBranchId: auth.branchIds[0] ?? null });
+    if (body.branchId) assertBranchAccess(auth, body.branchId);
+    const id = await createCustomerRecord(t, auth, org, body, { registeredBranchId: body.branchId ?? auth.branchIds[0] ?? null });
     return loadCustomerDetail(t, auth, orgId, id, await loadSettings(t, orgId));
   }),
 );
