@@ -204,8 +204,16 @@ is the whole of SalonOS, and pages and API share one origin (the refresh cookie 
 | `NOTIFICATIONS_MODE` | `disabled` for a staging site, `live` once providers are configured |
 | `TRUST_PROXY` | the number of proxies in front of the app (1 on Render) |
 
-Migrations are not run on deploy: apply them with the database workflow (above) before deploying code that needs them.
-The service only holds the `salon_app` password, which cannot change the schema.
+Migrations are not run on deploy: the service only holds the `salon_app` password, which cannot change the schema.
+Instead, deploys follow the checks on GitHub:
+
+1. Connect the repository through Render's GitHub app (github.com/apps/render, access to this repository only) and
+   pick it in the service's settings, branch `main`.
+2. Set auto-deploy to **After CI checks pass** (API: `autoDeployTrigger: checksPass`).
+3. A merge to `main` then runs CI and, when it adds a migration, the database workflow (above) on the `staging`
+   environment. Render deploys only once all of them have passed, so the schema is always ready before the code.
+
+Without the GitHub connection, run the database workflow by hand first, then start a deploy from Render.
 
 ## 6. Upgrades and migrations
 
