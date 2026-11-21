@@ -22,6 +22,7 @@ import { computeAvailability, type Interval } from '../scheduling/engine.js';
 import { effectiveBuffer, loadDayContext, loadServicesForBranch, loadStaffDays } from '../scheduling/loader.js';
 import { cancelAppointmentReminders, queueAppointmentMessages } from './messages.js';
 import { checkPackagesBought, planItems, summarizePlans, type ExistingItem, type ItemPlan } from './planner.js';
+import { bookingChanged, staffStarts } from '../staff-notifications/service.js';
 
 const MINUTE = 60_000;
 const BLOCKING: AppointmentStatus[] = ['scheduled', 'confirmed', 'checked_in', 'in_service', 'completed'];
@@ -141,6 +142,7 @@ export async function createAppointment(tx: Tx, auth: AuthContext, input: Create
     .returning('id')
     .executeTakeFirstOrThrow();
   await insertItems(tx, orgId, branch.id, row.id, plans, true);
+  await bookingChanged(tx, auth, orgId, settings, row.id, new Map());
   await addEvent(tx, auth, orgId, row.id, 'created', { source: input.source, items: plans.length }, { to: status });
   await audit(tx, auth, {
     action: 'appointment.created',
@@ -179,6 +181,7 @@ async function applyItemChange(
     .orderBy('sortOrder')
     .execute();
   const existingItems: ExistingItem[] = existing.map((e) => ({ serviceId: e.serviceId, staffId: e.staffId, startAt: e.startAt }));
+  const startsBefore = await staffStarts(tx, a.id);
 
   const plans = await planItems(tx, items, {
     orgId,
@@ -205,6 +208,7 @@ async function applyItemChange(
     if (['in_service'].includes(a.status)) {
       await tx.updateTable('appointmentItems').set({ status: 'in_service' }).where('appointmentId', '=', a.id).where('sortOrder', '=', 0).execute();
     }
+    await bookingChanged(tx, auth, orgId, settings, a.id, startsBefore);
   }
   // A waiting walk-in being given a time is a first booking, not a reschedule.
   const isReschedule = timeChanged && a.status !== 'waiting';
@@ -346,6 +350,7 @@ export async function changeStatus(tx: Tx, auth: AuthContext, id: string, input:
   }
 
   const now = new Date();
+  const startsBefore = to === 'cancelled' ? await staffStarts(tx, id) : null;
   const patch: Record<string, unknown> = { status: to, updatedBy: auth.userId || null, version: a.version + 1 };
   const itemPatch: Record<string, unknown> = {};
 
@@ -440,6 +445,7 @@ export async function changeStatus(tx: Tx, auth: AuthContext, id: string, input:
   if (to === 'cancelled' || to === 'no_show') {
     await cancelAppointmentReminders(tx, orgId, id, to === 'cancelled' ? 'Appointment was cancelled' : 'Marked as no-show');
     if (to === 'cancelled') await queueAppointmentMessages(tx, auth, orgId, settings, id, 'cancellation', { reminders: false, message: input.notifyCustomer ?? true });
+    if (startsBefore) await bookingChanged(tx, auth, orgId, settings, id, startsBefore, { cancelled: true });
   }
   if (restoring && a.startAt) {
     await queueAppointmentMessages(tx, auth, orgId, settings, id, 'confirmation', { reminders: true, message: false });
@@ -531,6 +537,8 @@ export async function createWalkIn(tx: Tx, auth: AuthContext, input: CreateWalkI
 
   if (input.startNow) {
     await assignWalkIn(tx, auth, appt.id, { assignments: lines.map((l) => ({ index: l.index, staffId: l.item.staffId! })), startNow: true });
+  } else if (input.items.some((i) => i.staffId)) {
+    await bookingChanged(tx, auth, orgId, settings, appt.id, new Map(), { walkIn: true });
   }
   return appt.id;
 }
@@ -549,6 +557,7 @@ export async function assignWalkIn(tx: Tx, auth: AuthContext, id: string, input:
   assertVersion(a, input.version);
   const [branch, settings] = await Promise.all([loadBranch(tx, orgId, a.branchId), loadSettings(tx, orgId)]);
   const rows = await tx.selectFrom('appointmentItems').selectAll().where('appointmentId', '=', id).orderBy('sortOrder').execute();
+  const startsBefore = await staffStarts(tx, id);
 
   const staffFor = rows.map((r, i) => input.assignments.find((x) => x.itemId === r.id)?.staffId ?? input.assignments.find((x) => x.index === i)?.staffId ?? r.staffId);
   if (staffFor.some((s) => !s)) throw new AppError(422, 'STAFF_UNAVAILABLE', 'Choose a team member for each service.');
@@ -634,4 +643,5 @@ export async function assignWalkIn(tx: Tx, auth: AuthContext, id: string, input:
     .execute();
   await addEvent(tx, auth, orgId, id, 'status_changed', { assignments: planInput.map((p) => ({ serviceId: p.serviceId, staffId: p.staffId, startAt: p.startAt })) }, { from: 'waiting', to });
   await audit(tx, auth, { action: 'walkin.assigned', entityType: 'appointment', entityId: id, branchId: a.branchId, summary: `Walk-in ${a.bookingNumber} assigned${input.startNow ? ' and started' : ''}`, after: { staff: planInput.map((p) => p.staffId), startAt: sum.startAt } });
+  await bookingChanged(tx, auth, orgId, settings, id, startsBefore, { walkIn: true });
 }

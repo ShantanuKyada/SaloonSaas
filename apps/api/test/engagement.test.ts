@@ -179,7 +179,7 @@ describe('notification failures never break the business', () => {
 describe('templates', () => {
   it('previews with sample data and rejects unknown placeholders', async () => {
     const list = await owner.get('/notification-templates');
-    expect(list.body.data.length).toBe(27); // 9 events × 3 channels
+    expect(list.body.data.length).toBe(30); // 10 events × 3 channels (one of them, "new booking", is for the team)
     const wa = list.body.data.find((x: { eventType: string; channel: string }) => x.eventType === 'appointment_confirmation' && x.channel === 'whatsapp');
     const bad = await owner.put(`/notification-templates/${wa.id}`).send({ body: 'Hi {{customerName}} {{creditCardNumber}}', isActive: true });
     expect(bad.status).toBe(400);

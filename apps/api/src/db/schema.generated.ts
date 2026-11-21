@@ -470,6 +470,7 @@ export interface Notifications {
   sentAt: Timestamp | null;
   sourceId: string | null;
   sourceType: string | null;
+  staffId: string | null;
   status: Generated<string>;
   statusReason: string | null;
   subject: string | null;
@@ -632,6 +633,7 @@ export interface OrganizationSettings {
   slotIntervalMinutes: Generated<number>;
   staffCanViewCustomerPhone: Generated<boolean>;
   staffCanViewOwnPerformance: Generated<boolean>;
+  notifyStaffOfBookings: Generated<boolean>;
   twoFactorRequirement: Generated<string>;
   updatedAt: Generated<Timestamp>;
 }
@@ -984,6 +986,20 @@ export interface Users {
   updatedAt: Generated<Timestamp>;
 }
 
+export interface StaffNotifications {
+  appointmentId: string | null;
+  body: string | null;
+  branchId: string;
+  createdAt: Generated<Timestamp>;
+  id: Generated<string>;
+  kind: string;
+  link: string | null;
+  organizationId: string;
+  readAt: Timestamp | null;
+  staffId: string;
+  title: string;
+}
+
 export interface DB {
   appointmentChangeRequests: AppointmentChangeRequests;
   appointmentEvents: AppointmentEvents;
@@ -1042,6 +1058,7 @@ export interface DB {
   staffBreaks: StaffBreaks;
   staffExpertise: StaffExpertise;
   staffLeaves: StaffLeaves;
+  staffNotifications: StaffNotifications;
   staffScheduleOverrides: StaffScheduleOverrides;
   staffServices: StaffServices;
   staffShifts: StaffShifts;
