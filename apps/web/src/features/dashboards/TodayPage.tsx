@@ -36,10 +36,10 @@ export function Component() {
       {d?.alerts.length ? <section aria-label="Things that need attention" className="grid gap-2 md:grid-cols-2">{d.alerts.map((a) => <AlertCard key={a.id} a={a} />)}</section> : null}
       {d?.now && <SalonNowTiles now={d.now} />}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Sales today" value={d ? money(d.today.revenue) : '…'} loading={!d} hint={d ? `${d.today.bills} bills` : undefined} />
-        <StatCard label="Collected today" value={d ? money(d.today.collected) : '…'} loading={!d} hint={d && d.today.refunded > 0 ? `${money(d.today.refunded)} refunded` : undefined} />
-        <StatCard label="Pending payments" value={d ? money(d.today.outstanding) : '…'} loading={!d} tone={d && d.today.overdue > 0 ? 'warning' : 'neutral'} hint={d && d.today.overdue > 0 ? `${money(d.today.overdue)} overdue` : undefined} />
-        <StatCard label="Appointments" value={d ? Object.entries(d.today.appointmentsByStatus).filter(([s]) => !['cancelled', 'no_show', 'waiting'].includes(s)).reduce((a, [, n]) => a + n, 0) : '…'} loading={!d} hint={statuses.map(([s, n]) => `${n} ${APPOINTMENT_STATUS_LABELS[s as AppointmentStatus]?.toLowerCase() ?? s}`).join(' · ')} />
+        <StatCard label="Sales today" to="/billing/bills" value={d ? money(d.today.revenue) : '…'} loading={!d} hint={d ? `${d.today.bills} bills` : undefined} />
+        <StatCard label="Collected today" to="/billing/payments" value={d ? money(d.today.collected) : '…'} loading={!d} hint={d && d.today.refunded > 0 ? `${money(d.today.refunded)} refunded` : undefined} />
+        <StatCard label="Pending payments" to="/billing/pending" value={d ? money(d.today.outstanding) : '…'} loading={!d} tone={d && d.today.outstanding > 0 ? 'danger' : 'neutral'} emphasized={!!d && d.today.outstanding > 0} hint={d && d.today.overdue > 0 ? `${money(d.today.overdue)} overdue` : undefined} />
+        <StatCard label="Appointments" to="/appointments?range=today" value={d ? Object.entries(d.today.appointmentsByStatus).filter(([s]) => !['cancelled', 'no_show', 'waiting'].includes(s)).reduce((a, [, n]) => a + n, 0) : '…'} loading={!d} hint={statuses.map(([s, n]) => `${n} ${APPOINTMENT_STATUS_LABELS[s as AppointmentStatus]?.toLowerCase() ?? s}`).join(' · ')} />
       </div>
       <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
         <Card>

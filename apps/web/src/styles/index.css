@@ -29,6 +29,14 @@
   --ring: #8b5cf6;
   --shadow: 0 1px 2px rgb(23 23 43 / 0.06), 0 1px 3px rgb(23 23 43 / 0.08);
   --shadow-lg: 0 10px 30px rgb(23 23 43 / 0.16);
+  /* Chart marks (dashboard): one accent for magnitude, status colours only where they mean good/bad, a recessive gray
+     for "nothing happened". Values from the data-viz reference palette, validated together for colour-blind safety
+     against this surface (scripts/validate_palette.js). Text never uses these: labels stay in fg/muted. */
+  --chart-accent: #6250d6;
+  --chart-accent-track: #e6e2fb;
+  --chart-good: #0ca30c;
+  --chart-critical: #d03b3b;
+  --chart-muted: #898781;
   color-scheme: light;
 }
 
@@ -58,6 +66,12 @@
   --ring: #a78bfa;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
   --shadow-lg: 0 10px 30px rgb(0 0 0 / 0.5);
+  /* The dark steps of the same hues, validated against the dark surface. */
+  --chart-accent: #9085e9;
+  --chart-accent-track: #2e2a55;
+  --chart-good: #0ca30c;
+  --chart-critical: #d03b3b;
+  --chart-muted: #898781;
   color-scheme: dark;
 }
 
