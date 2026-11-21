@@ -1,4 +1,4 @@
-import { APPOINTMENT_STATUS_LABELS, ATTENDANCE_STATUS_LABELS, PAYMENT_STATUS_LABELS, WALK_IN_STAGE_LABELS, type AppointmentStatus, type AttendanceStatus, type PaymentStatus, type WalkInStage } from '@salon/shared';
+import { APPOINTMENT_STATUS_LABELS, ATTENDANCE_STATUS_LABELS, PAYMENT_STATUS_LABELS, WALK_IN_STAGE_LABELS, currencyMinorDigits, type AppointmentStatus, type AttendanceStatus, type PaymentStatus, type WalkInStage } from '@salon/shared';
 import { Badge, type Tone } from '@/components/ui/display';
 import { useBranch } from '@/lib/branch';
 import { money } from '@/lib/format';
@@ -46,6 +46,14 @@ export function Money({ value, className, muted }: { value: number | null | unde
 export function useMoney() {
   const { currency } = useBranch();
   return (minor: number | null | undefined) => money(minor, currency);
+}
+
+/** Short money for chart axes and dense figures: ₹2.5L, ₹12K, ₹1.2Cr (amounts are in minor units, like everywhere). */
+export function useCompactMoney() {
+  const { currency } = useBranch();
+  const f = new Intl.NumberFormat('en-IN', { style: 'currency', currency, notation: 'compact', maximumFractionDigits: 1 });
+  const digits = currencyMinorDigits(currency);
+  return (minor: number | null | undefined) => f.format((minor ?? 0) / 10 ** digits);
 }
 
 /** A clear, non-blocking "₹3,500 pending" marker (requirement 86.14). */

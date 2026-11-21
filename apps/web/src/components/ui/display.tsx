@@ -1,6 +1,7 @@
-import { AlertTriangle, ArrowDownRight, ArrowUpRight, Loader2, SearchX } from 'lucide-react';
+import { AlertTriangle, ArrowDownRight, ArrowUpRight, ChevronRight, Loader2, SearchX } from 'lucide-react';
 import { Tabs as RxTabs } from 'radix-ui';
 import type { ReactNode } from 'react';
+import { Link } from 'react-router';
 import { cn, initials, readableOn } from '@/lib/utils';
 import { deltaPercent } from '@/lib/format';
 import { friendlyError } from '@/lib/errors';
@@ -75,30 +76,48 @@ export function Avatar({ name, color, src, size = 'md' }: { name: string; color?
 }
 
 // ───────────── Numbers ─────────────
-export function StatCard({ label, value, previous, hint, icon, loading, tone = 'neutral', invertDelta, onClick, format }: { label: ReactNode; value: ReactNode; previous?: { current: number; before: number | null }; hint?: ReactNode; icon?: ReactNode; loading?: boolean; tone?: Tone; invertDelta?: boolean; onClick?: () => void; format?: (n: number) => string }) {
+const emphasis: Partial<Record<Tone, string>> = {
+  danger: 'border-danger/30 bg-danger-soft',
+  warning: 'border-warning/30 bg-warning-soft',
+  success: 'border-success/30 bg-success-soft',
+};
+
+/**
+ * A KPI tile: label, value, change against the previous period and a hint. With `to` the whole tile opens the page
+ * behind the number; with `emphasis` it is tinted in its tone (e.g. money still to collect).
+ */
+export function StatCard({ label, value, previous, hint, icon, loading, tone = 'neutral', invertDelta, onClick, format, to, emphasized }: { label: ReactNode; value: ReactNode; previous?: { current: number; before: number | null }; hint?: ReactNode; icon?: ReactNode; loading?: boolean; tone?: Tone; invertDelta?: boolean; onClick?: () => void; format?: (n: number) => string; to?: string; emphasized?: boolean }) {
   const delta = previous ? deltaPercent(previous.current, previous.before) : null;
   const good = delta === null ? null : invertDelta ? delta <= 0 : delta >= 0;
-  const Wrapper = onClick ? 'button' : 'div';
-  return (
-    <Wrapper onClick={onClick} className={cn('rounded-card border border-line bg-surface p-4 text-left shadow-card', onClick && 'transition-colors hover:border-primary/50')}>
+  const tint = emphasized ? emphasis[tone] : undefined;
+  const className = cn('group block rounded-card border border-line bg-surface p-4 text-left shadow-card', tint, (onClick || to) && 'transition-colors hover:border-primary/50 focus-visible:border-primary');
+  const body = (
+    <>
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium text-muted">{label}</span>
+        <span className={cn('text-sm font-medium', emphasized && tone !== 'neutral' ? toneText[tone] : 'text-muted')}>{label}</span>
         {icon && <span className={cn('grid size-8 place-items-center rounded-lg', tones[tone])}>{icon}</span>}
+        {to && !icon && <ChevronRight className="size-4 text-faint transition-transform group-hover:translate-x-0.5" aria-hidden />}
       </div>
-      {loading ? <div className="skeleton mt-2 h-8 w-28" /> : <div className="mt-1 text-2xl font-semibold tracking-tight text-fg tabular-nums max-md:text-xl">{value}</div>}
-      <div className="mt-1 flex min-h-5 items-center gap-2 text-xs text-muted">
+      {loading ? <div className="skeleton mt-2 h-8 w-28" /> : <div className={cn('mt-1 text-2xl font-semibold tracking-tight max-md:text-xl', emphasized && tone !== 'neutral' ? toneText[tone] : 'text-fg')}>{value}</div>}
+      <div className="mt-1 flex min-h-5 flex-wrap items-center gap-x-2 text-xs text-muted">
         {delta !== null && (
           <span className={cn('inline-flex items-center gap-0.5 font-medium', good ? 'text-success' : 'text-danger')}>
-            {delta >= 0 ? <ArrowUpRight className="size-3.5" /> : <ArrowDownRight className="size-3.5" />}
+            {delta >= 0 ? <ArrowUpRight className="size-3.5" aria-hidden /> : <ArrowDownRight className="size-3.5" aria-hidden />}
+            <span className="sr-only">{delta >= 0 ? 'Up' : 'Down'}</span>
             {Math.abs(delta)}%
           </span>
         )}
-        {previous && delta !== null && <span>vs before{format ? ` (${format(previous.before ?? 0)})` : ''}</span>}
+        {previous && delta !== null && <span>vs previous period{format ? ` (${format(previous.before ?? 0)})` : ''}</span>}
         {hint}
       </div>
-    </Wrapper>
+    </>
   );
+  if (to) return <Link to={to} className={className}>{body}</Link>;
+  if (onClick) return <button type="button" onClick={onClick} className={className}>{body}</button>;
+  return <div className={className}>{body}</div>;
 }
+
+const toneText: Record<Tone, string> = { neutral: 'text-fg', primary: 'text-primary', success: 'text-success', warning: 'text-warning', danger: 'text-danger', info: 'text-info' };
 
 // ───────────── Loading / empty / error ─────────────
 export function Skeleton({ className }: { className?: string }) {
