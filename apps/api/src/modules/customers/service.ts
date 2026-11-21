@@ -29,16 +29,27 @@ export function maskContact<T extends { mobile?: string | null; whatsappNumber?:
   };
 }
 
-/** Search-box semantics: name, mobile (any partial digits), customer code, email. */
+/**
+ * The digits to look for in phone numbers, when the search looks like a phone number: 3+ digits and no letters
+ * ("98765", "+91 98765 43210"). Text with letters is a name, code or email, so "Riya 2nd floor" or "E2E 1M4GB" does not
+ * also bring up everyone whose number happens to contain those digits.
+ */
+export function phoneDigits(term: string): string {
+  if (/\p{L}/u.test(term)) return '';
+  const digits = term.replace(/\D/g, '');
+  return digits.length >= 3 ? digits : '';
+}
+
+/** Search-box semantics: name, customer code, email, and mobile (any partial digits) when the search is a number. */
 export function customerSearchCondition(term: string, alias = 'c'): RawBuilder<boolean> {
   const text = term.trim();
   const like = `%${text.replace(/[%_\\]/g, (m) => `\\${m}`)}%`;
-  const digits = text.replace(/\D/g, '');
+  const digits = phoneDigits(text);
   const name = sql.ref(`${alias}.full_name`);
   const code = sql.ref(`${alias}.customer_code`);
   const email = sql.ref(`${alias}.email`);
   const mobile = sql.ref(`${alias}.mobile`);
-  return digits.length >= 3
+  return digits
     ? sql<boolean>`(${name} ilike ${like} or ${code} ilike ${like} or ${email} ilike ${like} or ${mobile} like ${`%${digits}%`})`
     : sql<boolean>`(${name} ilike ${like} or ${code} ilike ${like} or ${email} ilike ${like})`;
 }

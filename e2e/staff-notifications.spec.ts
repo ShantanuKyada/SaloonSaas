@@ -28,7 +28,7 @@ test.describe('Team members hear about their bookings', () => {
     expect(booked).toBe(true);
 
     await signInAs(page, USERS.stylist, '/my-day');
-    const bell = page.getByRole('button', { name: /^Notifications, \d+ unread$/ });
+    const bell = page.getByRole('button', { name: /^Notifications, \d+\+? unread$/ });
     await expect(bell).toBeVisible();
     await bell.click();
     const panel = page.getByRole('dialog', { name: 'Notifications' });

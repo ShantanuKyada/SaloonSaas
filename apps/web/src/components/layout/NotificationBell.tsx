@@ -70,6 +70,8 @@ export function NotificationBell() {
 
   const unread = feed.data?.unread ?? 0;
   const items = feed.data?.items ?? [];
+  // The badge text is part of the button's name, so screen readers say what sighted people see.
+  const badge = unread > 99 ? '99+' : String(unread);
 
   const openItem = (n: StaffNotification) => {
     if (!n.readAt) markRead.mutate([n.id]);
@@ -85,11 +87,11 @@ export function NotificationBell() {
       label="Notifications"
       className="w-[min(24rem,calc(100vw-1.5rem))] p-0"
       trigger={
-        <IconButton label={unread ? `Notifications, ${unread} unread` : 'Notifications'} className="relative">
+        <IconButton label={unread ? `Notifications, ${badge} unread` : 'Notifications'} className="relative">
           <Bell className="size-5" />
           {unread > 0 && (
-            <span aria-hidden className="absolute right-1.5 top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[10px] font-semibold leading-none text-white ring-2 ring-surface">
-              {unread > 9 ? '9+' : unread}
+            <span aria-hidden className="absolute right-1 top-1 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[10px] font-semibold leading-none text-surface ring-2 ring-surface">
+              {badge}
             </span>
           )}
         </IconButton>

@@ -77,7 +77,8 @@ test.describe('Walk-ins', () => {
     await expect(page.getByRole('region', { name: 'Waiting' }).getByText(name)).toBeVisible();
 
     // Their page asks for the rest of their details
-    const [found] = await api.get<Array<{ id: string }>>('/customers/search', { q: name });
+    // Search also matches phone numbers on any 3+ digits in the text, so pick the exact name.
+    const found = (await api.get<Array<{ id: string; fullName: string }>>('/customers/search', { q: name })).find((c) => c.fullName === name);
     await page.goto(`/customers/${found!.id}`);
     await expect(page.getByText('Only a name and mobile number so far')).toBeVisible();
     await page.getByRole('button', { name: 'Add details' }).click();
