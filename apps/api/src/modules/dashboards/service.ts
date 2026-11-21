@@ -162,8 +162,8 @@ export async function buildAlerts(tx: Tx, auth: AuthContext, orgId: string, bran
   if (canMoney) {
     const out = await outstandingNow(tx, orgId, branches, today);
     const last30 = await revenueBetween(tx, orgId, branches, { from: addDays(today, -29), to: today });
-    if (out.overdue > 0) alerts.push({ id: 'overdue', severity: out.overdue > Math.max(last30.billed * 0.25, 1) ? 'critical' : 'warning', title: `${formatMoney(out.overdue, currency)} is overdue`, detail: `${out.customers} customer${out.customers === 1 ? '' : 's'} have pending payments. Send reminders or collect at their next visit.`, link: '/billing/outstanding' });
-    else if (last30.billed > 0 && out.total > last30.billed * 0.3) alerts.push({ id: 'high-outstanding', severity: 'warning', title: `Pending payments are ${formatMoney(out.total, currency)}`, detail: 'That is more than 30% of the last 30 days of billing.', link: '/billing/outstanding' });
+    if (out.overdue > 0) alerts.push({ id: 'overdue', severity: out.overdue > Math.max(last30.billed * 0.25, 1) ? 'critical' : 'warning', title: `${formatMoney(out.overdue, currency)} is overdue`, detail: `${out.customers} customer${out.customers === 1 ? '' : 's'} have pending payments. Send reminders or collect at their next visit.`, link: '/billing/pending' });
+    else if (last30.billed > 0 && out.total > last30.billed * 0.3) alerts.push({ id: 'high-outstanding', severity: 'warning', title: `Pending payments are ${formatMoney(out.total, currency)}`, detail: 'That is more than 30% of the last 30 days of billing.', link: '/billing/pending' });
   }
 
   const outcomes = await tx
@@ -184,10 +184,10 @@ export async function buildAlerts(tx: Tx, auth: AuthContext, orgId: string, bran
   const cancelRate = recent ? Number(outcomes.recentCancelled) / recent : 0;
   const priorRate = Number(outcomes.prior) ? Number(outcomes.priorCancelled) / Number(outcomes.prior) : 0;
   if (recent >= 10 && cancelRate >= 0.2 && cancelRate > priorRate * 1.5) {
-    alerts.push({ id: 'cancellations', severity: 'warning', title: 'More cancellations than usual', detail: `${Math.round(cancelRate * 100)}% of bookings this week were cancelled (usually ${Math.round(priorRate * 100)}%).`, link: '/reports/appointments' });
+    alerts.push({ id: 'cancellations', severity: 'warning', title: 'More cancellations than usual', detail: `${Math.round(cancelRate * 100)}% of bookings this week were cancelled (usually ${Math.round(priorRate * 100)}%).`, link: '/reports/appointments-cancellations' });
   }
   if (Number(outcomes.recentNoShow) >= 3 && Number(outcomes.recentNoShow) / Math.max(recent, 1) >= 0.1) {
-    alerts.push({ id: 'no-shows', severity: 'warning', title: 'No-shows are up', detail: `${outcomes.recentNoShow} customers did not turn up in the last 7 days. Reminders may need to go out earlier.`, link: '/reports/appointments' });
+    alerts.push({ id: 'no-shows', severity: 'warning', title: 'No-shows are up', detail: `${outcomes.recentNoShow} customers did not turn up in the last 7 days. Reminders may need to go out earlier.`, link: '/reports/appointments-no-shows' });
   }
 
   const totals = sumNow(nowRows);
@@ -233,7 +233,7 @@ export async function buildAlerts(tx: Tx, auth: AuthContext, orgId: string, bran
   }
   if (hasPermission(auth, 'attendance.manage')) {
     const broken = await tx.selectFrom('organizationIntegrations').select(['displayName']).where('organizationId', '=', orgId).where('kind', '=', 'biometric').where('status', '=', 'error').execute();
-    for (const b of broken) alerts.push({ id: `device-${b.displayName}`, severity: 'warning', title: `${b.displayName} is not connected`, detail: 'Attendance is not updating. Bookings are not affected.', link: '/settings/connections' });
+    for (const b of broken) alerts.push({ id: `device-${b.displayName}`, severity: 'warning', title: `${b.displayName} is not connected`, detail: 'Attendance is not updating. Bookings are not affected.', link: '/settings?tab=connections' });
   }
   const order = { critical: 0, warning: 1, info: 2 } as const;
   return alerts.sort((a, b) => order[a.severity] - order[b.severity]);
