@@ -174,12 +174,12 @@ export function Menu({ trigger, items, align = 'end', label }: { trigger: ReactN
   );
 }
 
-export function Popover({ trigger, children, align = 'start', className }: { trigger: ReactNode; children: ReactNode; align?: 'start' | 'center' | 'end'; className?: string }) {
+export function Popover({ trigger, children, align = 'start', className, open, onOpenChange, label }: { trigger: ReactNode; children: ReactNode; align?: 'start' | 'center' | 'end'; className?: string; open?: boolean; onOpenChange?: (open: boolean) => void; label?: string }) {
   return (
-    <RxPopover.Root>
+    <RxPopover.Root open={open} onOpenChange={onOpenChange}>
       <RxPopover.Trigger asChild>{trigger}</RxPopover.Trigger>
       <RxPopover.Portal>
-        <RxPopover.Content align={align} sideOffset={6} collisionPadding={12} className={cn('z-50 w-72 rounded-xl border border-line bg-surface p-3 shadow-pop', className)}>
+        <RxPopover.Content align={align} sideOffset={6} collisionPadding={12} aria-label={label} className={cn('z-50 w-72 rounded-xl border border-line bg-surface p-3 shadow-pop', className)}>
           {children}
         </RxPopover.Content>
       </RxPopover.Portal>

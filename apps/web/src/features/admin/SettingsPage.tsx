@@ -236,10 +236,11 @@ function PrivacyPanel() {
     <SettingsShell>
       {(st) => (
         <div className="space-y-5">
-          <Section title="What team members can see" footer={saveButton(st, ['staffCanViewCustomerPhone', 'staffCanViewOwnPerformance'])}>
+          <Section title="Team members" description="What they can see, and how they hear about their bookings." footer={saveButton(st, ['staffCanViewCustomerPhone', 'staffCanViewOwnPerformance', 'notifyStaffOfBookings'])}>
             <FormError message={st.error} />
             <Switch checked={st.s.staffCanViewCustomerPhone} onCheckedChange={(v) => st.set({ staffCanViewCustomerPhone: v })} label="Team members can see customer phone numbers" description="Off: numbers are hidden for roles without the “see phone numbers and emails” permission." />
             <Switch checked={st.s.staffCanViewOwnPerformance} onCheckedChange={(v) => st.set({ staffCanViewOwnPerformance: v })} label="Team members can see their own monthly numbers" description="Shows appointments done and services worth on their My day screen." />
+            <Switch checked={st.s.notifyStaffOfBookings} onCheckedChange={(v) => st.set({ notifyStaffOfBookings: v })} label="Message team members about their new bookings" description="Sends the team member a WhatsApp (or SMS or email, whichever is set up) when someone books them. The bell in the app works either way. Change its wording under Messages → Message templates → New booking (team)." />
           </Section>
           <Section title="Two-step sign-in" description="After their password, people enter a 6-digit code from an authenticator app on their phone. It protects the accounts that can change money, settings and users." footer={isOwner ? saveButton(st, ['twoFactorRequirement']) : undefined}>
             <Field label="Who must use it" hint={isOwner ? 'Anyone can switch it on for themselves. People who are required are asked to set it up the next time they open the app.' : 'Only an owner can change this.'}>

@@ -100,6 +100,18 @@ export function relativeDays(value: string | null | undefined, now = Date.now())
   return `${Math.floor(days / 365)}y ago`;
 }
 
+/** "just now", "5 min ago", "3 h ago", "Yesterday", "4 days ago", then the date. */
+export function timeAgo(value: string | Date, tz: string, now = Date.now()): string {
+  const minutes = Math.floor((now - new Date(value).getTime()) / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} h ago`;
+  const days = daysBetweenDates(localDate(value, tz), localDate(new Date(now), tz));
+  if (days <= 1) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  return fmtDay(value, tz);
+}
+
 export function fmtDuration(minutes: number): string {
   if (minutes < 60) return `${minutes} min`;
   const h = Math.floor(minutes / 60);
