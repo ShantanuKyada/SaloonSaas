@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Building2, CalendarPlus, ChevronDown, ChevronRight, DoorOpen, Home, Keyboard, KeyRound, LogOut, Menu as MenuIcon, Moon, Plus, Receipt, Search, ShieldCheck, Store, Sun, UserPlus, Users, Wallet, X, CalendarDays } from 'lucide-react';
+import { Building2, CalendarCheck, CalendarPlus, CalendarRange, ChevronDown, ChevronRight, DoorOpen, Home, Keyboard, KeyRound, LogOut, Menu as MenuIcon, Moon, Plus, Receipt, Search, ShieldCheck, Store, Sun, UserPlus, Users, Wallet, X, CalendarDays } from 'lucide-react';
 import { Dialog } from 'radix-ui';
 import { Suspense, useState } from 'react';
 import { Link, NavLink, Outlet, useMatches, useNavigate } from 'react-router';
@@ -164,8 +164,30 @@ function MobileBottomNav({ onMore }: { onMore: () => void }) {
   const can = useCan();
   const quick = useQuickActions();
   const staffOnly = can('appointments.view_own') && !can('appointments.view');
-  if (staffOnly) return null;
   const item = 'flex min-h-14 flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium';
+  // Team members work from their phone: their day, their bookings, their schedule and leave.
+  if (staffOnly) {
+    return (
+      <nav aria-label="Quick navigation" className="no-print fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] lg:hidden">
+        <NavLink to="/my-day" className={({ isActive }) => cn(item, isActive ? 'text-primary' : 'text-muted')}>
+          <CalendarDays className="size-5" aria-hidden />
+          My day
+        </NavLink>
+        <NavLink to="/my-appointments" className={({ isActive }) => cn(item, isActive ? 'text-primary' : 'text-muted')}>
+          <CalendarCheck className="size-5" aria-hidden />
+          Appointments
+        </NavLink>
+        <NavLink to="/my-schedule" className={({ isActive }) => cn(item, isActive ? 'text-primary' : 'text-muted')}>
+          <CalendarRange className="size-5" aria-hidden />
+          Schedule
+        </NavLink>
+        <button type="button" onClick={onMore} className={cn(item, 'text-muted')}>
+          <MenuIcon className="size-5" aria-hidden />
+          More
+        </button>
+      </nav>
+    );
+  }
   return (
     <nav aria-label="Quick navigation" className="no-print fixed inset-x-0 bottom-0 z-30 flex items-stretch border-t border-line bg-surface pb-[env(safe-area-inset-bottom)] lg:hidden">
       <NavLink to="/desk" className={({ isActive }) => cn(item, isActive ? 'text-primary' : 'text-muted')}>

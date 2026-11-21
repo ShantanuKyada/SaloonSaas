@@ -6,6 +6,8 @@ import { addDays, daysBetween, eachDate, todayIn } from '../../core/time.js';
 import { localDateConditionsTz } from '../../core/sql.js';
 import { loadOrg } from '../../core/validation.js';
 import type { Tx } from '../../db/tenant.js';
+
+const NONE = '00000000-0000-0000-0000-000000000000';
 import { loadSalonNow, sumNow, type BranchNow } from './now.js';
 
 const MINUTE = 60_000;
@@ -235,6 +237,19 @@ export async function buildAlerts(tx: Tx, auth: AuthContext, orgId: string, bran
     const broken = await tx.selectFrom('organizationIntegrations').select(['displayName']).where('organizationId', '=', orgId).where('kind', '=', 'biometric').where('status', '=', 'error').execute();
     for (const b of broken) alerts.push({ id: `device-${b.displayName}`, severity: 'warning', title: `${b.displayName} is not connected`, detail: 'Attendance is not updating. Bookings are not affected.', link: '/settings?tab=connections' });
   }
+  // Requests from team members waiting for an answer: time changes (front desk) and leave (managers).
+  const canMove = hasPermission(auth, 'appointments.update');
+  const canLeave = hasPermission(auth, 'staff.schedule');
+  if (canMove || canLeave) {
+    const moves = canMove ? await tx.selectFrom('appointmentChangeRequests').select((eb) => eb.fn.countAll<number>().as('n')).where('organizationId', '=', orgId).where('branchId', 'in', branches.length ? branches : [NONE]).where('status', '=', 'pending').executeTakeFirstOrThrow() : { n: 0 };
+    const leaves = canLeave ? await tx.selectFrom('staffLeaves as l').innerJoin('staff as s', 's.id', 'l.staffId').select((eb) => eb.fn.countAll<number>().as('n')).where('l.organizationId', '=', orgId).where('s.branchId', 'in', branches.length ? branches : [NONE]).where('l.status', '=', 'pending').executeTakeFirstOrThrow() : { n: 0 };
+    const total = Number(moves.n) + Number(leaves.n);
+    if (total > 0) {
+      const parts = [Number(moves.n) > 0 ? `${moves.n} to move ${Number(moves.n) === 1 ? 'an appointment' : 'appointments'}` : null, Number(leaves.n) > 0 ? `${leaves.n} for leave` : null].filter(Boolean).join(' and ');
+      alerts.push({ id: 'team-requests', severity: 'warning', title: `${total} ${total === 1 ? 'request' : 'requests'} from the team ${total === 1 ? 'is' : 'are'} waiting`, detail: `${parts[0]!.toUpperCase()}${parts.slice(1)}. Approve or decline on the Front desk.`, link: '/desk' });
+    }
+  }
+
   const order = { critical: 0, warning: 1, info: 2 } as const;
   return alerts.sort((a, b) => order[a.severity] - order[b.severity]);
 }

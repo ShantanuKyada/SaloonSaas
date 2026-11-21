@@ -18,6 +18,7 @@ import { reportRoutes } from './reports/routes.js';
 import { auditRoutes, searchRoutes } from './search/routes.js';
 import { schedulingRoutes } from './scheduling/routes.js';
 import { leaveRoutes, staffRoutes, timeBlockRoutes } from './staff/routes.js';
+import { changeRequestRoutes, meRoutes } from './team-requests/routes.js';
 import { roleRoutes, userRoutes } from './users/routes.js';
 
 const modules: ModuleRouter[] = [
@@ -34,6 +35,8 @@ const modules: ModuleRouter[] = [
   staffRoutes,
   leaveRoutes,
   timeBlockRoutes,
+  meRoutes,
+  changeRequestRoutes,
   customerRoutes,
   segmentRoutes,
   schedulingRoutes,

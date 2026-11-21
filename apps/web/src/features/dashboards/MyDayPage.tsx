@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Phone } from 'lucide-react';
 import { useState } from 'react';
+import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toastError } from '@/app/providers';
@@ -106,7 +107,10 @@ export function Component() {
       {d.performance && (
         <Card><p className="text-xs font-semibold uppercase tracking-wide text-muted">This month</p><p className="mt-1 text-sm"><Badge tone="success">{d.performance.completedThisMonth} appointments done</Badge> <span className="ml-2 text-muted">Services worth {money(d.performance.revenueThisMonth)}</span></p></Card>
       )}
-      {d.summary.tomorrow > 0 && <p className="text-center text-sm text-muted">Tomorrow: {d.summary.tomorrow} {d.summary.tomorrow === 1 ? 'appointment' : 'appointments'}</p>}
+      <p className="text-center text-sm text-muted">
+        {d.summary.tomorrow > 0 ? <>Tomorrow: {d.summary.tomorrow} {d.summary.tomorrow === 1 ? 'appointment' : 'appointments'} · </> : null}
+        <Link to="/my-appointments" className="font-medium text-primary hover:underline">All my appointments</Link> · <Link to="/my-schedule" className="font-medium text-primary hover:underline">Schedule & leave</Link>
+      </p>
     </div>
   );
 }

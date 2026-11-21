@@ -10,6 +10,7 @@ import { AppointmentDrawer } from '@/features/appointments/AppointmentDrawer';
 import { nextActions, useAppointmentActions } from '@/features/appointments/actions';
 import { SalonNowTiles, StaffNowList } from '@/features/dashboards/LiveStatus';
 import { useQuickActions } from '@/features/quick/QuickActions';
+import { TeamRequests } from './TeamRequests';
 import { api } from '@/lib/api';
 import { useCan, useUser } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
@@ -46,6 +47,7 @@ export function Component() {
   return (
     <div className="space-y-5">
       <PageHeader title={`${greeting(timezone)}, ${user.fullName.split(' ')[0]}`} description={`${branch.name} · ${new Date(now).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', timeZone: timezone })}`} />
+      <TeamRequests />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {quickTiles.filter((t) => t.show).map((t) => (

@@ -420,7 +420,7 @@ r.delete('/:id/overrides/:overrideId', { summary: 'Remove a one-day schedule cha
 // ───────────── Leave ─────────────
 const leaves = createRouter('/staff-leaves', 'Staff');
 
-async function leaveConflicts(tx: Tx, staffId: string, startDate: string, endDate: string, timezone: string) {
+export async function leaveConflicts(tx: Tx, staffId: string, startDate: string, endDate: string, timezone: string) {
   const { start, end } = localRangeToUtc(startDate, endDate, timezone);
   return tx
     .selectFrom('appointmentItems as ai')

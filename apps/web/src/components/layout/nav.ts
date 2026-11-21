@@ -1,5 +1,5 @@
 import type { Permission } from '@salon/shared';
-import { BarChart3, Bell, Building2, CalendarDays, ClipboardList, DoorOpen, LayoutDashboard, ListChecks, Receipt, Scissors, Settings, ShieldCheck, Sparkles, Store, UserCog, Users, Wallet, type LucideIcon } from 'lucide-react';
+import { BarChart3, Bell, Building2, CalendarCheck, CalendarDays, CalendarRange, ClipboardList, DoorOpen, LayoutDashboard, ListChecks, Receipt, Scissors, Settings, ShieldCheck, Sparkles, Store, UserCog, Users, Wallet, type LucideIcon } from 'lucide-react';
 
 // Sidebar structure from the product brief, written in the salon's own words. An item shows when the user has ANY of
 // its permissions; the API enforces the same permissions, so hiding is only about keeping screens uncluttered.
@@ -27,6 +27,8 @@ export const NAV: NavGroup[] = [
       { label: 'Today at the salon', to: '/today', icon: ClipboardList, any: ['dashboard.branch'], unless: ['dashboard.business'] },
       { label: 'Front desk', to: '/desk', icon: Store, any: ['appointments.create', 'walkins.manage', 'billing.create'] },
       { label: 'My day', to: '/my-day', icon: CalendarDays, any: ['appointments.view_own'], unless: ['appointments.view'] },
+      { label: 'My appointments', to: '/my-appointments', icon: CalendarCheck, any: ['appointments.view_own'], unless: ['appointments.view'] },
+      { label: 'My schedule & leave', to: '/my-schedule', icon: CalendarRange, any: ['appointments.view_own'], unless: ['appointments.view'] },
     ],
   },
   {
