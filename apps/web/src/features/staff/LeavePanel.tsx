@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { toastError } from '@/app/providers';
-import { Badge, Card, EmptyState, ErrorState, InlineNotice, type Tone } from '@/components/ui/display';
+import { Badge, Card, EmptyState, ErrorState, InlineNotice } from '@/components/ui/display';
 import { Button } from '@/components/ui/button';
 import { DateInput, Field, FormError, Select, Textarea } from '@/components/ui/form';
 import { Modal } from '@/components/ui/overlay';
@@ -15,15 +15,16 @@ import { useCan } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { friendlyError } from '@/lib/errors';
 import { addDaysTo, fmtDay, fmtTime, startOfMonth, todayIn } from '@/lib/format';
+import { HALF_DAY_LABEL, LEAVE_STATUS, LEAVE_TYPE_LABEL } from '@/lib/leave';
 import { useStaffList } from '@/lib/queries';
 
 interface Leave { id: string; staffId: string; staffName: string; leaveType: string; startDate: string; endDate: string; halfDay: string; reason: string | null; status: LeaveStatus; decidedByName: string | null }
 interface Conflict { appointmentId: string; bookingNumber: string; startAt: string; customerName: string; serviceName: string }
 interface LeaveResult { leave: Leave; conflicts: Conflict[] }
 
-const TYPE_LABEL: Record<string, string> = { casual: 'Casual leave', sick: 'Sick leave', earned: 'Earned leave', unpaid: 'Unpaid leave', other: 'Other' };
-const HALF_LABEL: Record<string, string> = { none: 'Full day', first_half: 'First half', second_half: 'Second half' };
-const STATUS: Record<LeaveStatus, { label: string; tone: Tone }> = { pending: { label: 'Waiting for approval', tone: 'warning' }, approved: { label: 'Approved', tone: 'success' }, rejected: { label: 'Declined', tone: 'danger' }, cancelled: { label: 'Cancelled', tone: 'neutral' } };
+const TYPE_LABEL = LEAVE_TYPE_LABEL;
+const HALF_LABEL = HALF_DAY_LABEL;
+const STATUS = LEAVE_STATUS;
 
 export function LeavePanel() {
   const can = useCan();

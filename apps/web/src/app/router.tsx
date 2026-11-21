@@ -31,7 +31,11 @@ const routes: RouteObject[] = [
           // Dashboards and the front desk
           guarded(['dashboard.business'], [{ path: 'dashboard', ...page(() => import('@/features/dashboards/OwnerDashboardPage'), 'Dashboard') }]),
           guarded(['dashboard.branch'], [{ path: 'today', ...page(() => import('@/features/dashboards/TodayPage'), 'Today at the salon') }]),
-          guarded(['appointments.view_own'], [{ path: 'my-day', ...page(() => import('@/features/dashboards/MyDayPage'), 'My day') }]),
+          guarded(['appointments.view_own'], [
+            { path: 'my-day', ...page(() => import('@/features/dashboards/MyDayPage'), 'My day') },
+            { path: 'my-appointments', ...page(() => import('@/features/me/MyAppointmentsPage'), 'My appointments') },
+            { path: 'my-schedule', ...page(() => import('@/features/me/MySchedulePage'), 'My schedule & leave') },
+          ]),
           guarded(['appointments.create', 'walkins.manage', 'billing.create'], [{ path: 'desk', ...page(() => import('@/features/desk/FrontDeskPage'), 'Front desk') }]),
 
           // Appointments
