@@ -152,6 +152,7 @@ export const organizationSettingsSchema = z
     outstandingReminderMaxPerMonth: z.number().int().min(1).max(31),
     staffCanViewCustomerPhone: z.boolean(),
     staffCanViewOwnPerformance: z.boolean(),
+    notifyStaffOfBookings: z.boolean(),
     onlineBookingEnabled: z.boolean(),
     twoFactorRequirement: z.enum(TWO_FACTOR_REQUIREMENTS),
     invoicePrefix: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{1,6}$/),

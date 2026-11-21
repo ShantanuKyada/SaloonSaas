@@ -13,6 +13,7 @@ import { BranchProvider, useBranch } from '@/lib/branch';
 import { useHotkeys, useTheme } from '@/lib/hooks';
 import { cn, initials } from '@/lib/utils';
 import { GlobalSearch } from './GlobalSearch';
+import { NotificationBell } from './NotificationBell';
 import { Sidebar, SidebarContent } from './Sidebar';
 
 function Breadcrumbs() {
@@ -137,6 +138,7 @@ function Topbar({ onOpenMenu, onSearch, onShortcuts }: { onOpenMenu: () => void;
       {newItems.some((i) => !i.hidden) && (
         <Menu label="New…" trigger={<IconButton label="New…" variant="soft"><Plus className="size-5" /></IconButton>} items={newItems} />
       )}
+      {user.staffId && <NotificationBell />}
       <BranchSelector />
       <Menu
         label="Account"

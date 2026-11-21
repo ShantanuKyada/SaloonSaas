@@ -19,6 +19,7 @@ import { createRouter, paged } from '../../core/router.js';
 import { eachDate, isoWeekday, localRangeToUtc, todayIn } from '../../core/time.js';
 import { loadBranch, loadSettings } from '../../core/validation.js';
 import type { Tx } from '../../db/tenant.js';
+import { phoneDigits } from '../customers/service.js';
 import { loadAppointmentDtos, visibleToOwnScope } from './dto.js';
 import { assignWalkIn, changeStatus, createAppointment, createWalkIn, moveAppointment, updateAppointment } from './service.js';
 
@@ -63,13 +64,13 @@ r.get('/', { summary: 'Appointment list with filters (server-side pagination)', 
     }
     if (query.search) {
       const like = `%${query.search}%`;
-      const digits = query.search.replace(/\D/g, '');
+      const digits = phoneDigits(query.search);
       base = base.where((eb) =>
         eb.or([
           eb('a.bookingNumber', 'ilike', like),
           eb('c.fullName', 'ilike', like),
           eb('c.customerCode', 'ilike', like),
-          ...(digits.length >= 3 ? [eb('c.mobile', 'like', `%${digits}%`)] : []),
+          ...(digits ? [eb('c.mobile', 'like', `%${digits}%`)] : []),
         ]),
       );
     }

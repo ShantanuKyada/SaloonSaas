@@ -273,6 +273,16 @@ describe('search and activity log', () => {
     expect((await owner.get('/search?q=x')).status).toBe(400);
   });
 
+  it('treats a search as a phone number only when it has no letters', async () => {
+    const names = async (path: string) => ((await owner.get(path)).body.data as Array<{ fullName?: string; customer?: { fullName: string } }>).map((r) => r.fullName ?? r.customer?.fullName);
+    // Meera's number is 98765 43210: digits alone (with spaces or +91) find her...
+    expect(await names('/customers?search=%2B91%2098765')).toContain('Meera Patel');
+    expect(await names('/appointments?search=543210&pageSize=100')).toContain('Meera Patel');
+    // ...but the same digits inside a name or code do not bring her up.
+    expect(await names('/customers?search=Room%20543')).not.toContain('Meera Patel');
+    expect(await names('/appointments?search=E2E%201M543&pageSize=100')).not.toContain('Meera Patel');
+  });
+
   it('records who did what, and keeps it away from people without access', async () => {
     const log = await owner.get('/audit?action=invoice.created&pageSize=5');
     expect(log.status).toBe(200);

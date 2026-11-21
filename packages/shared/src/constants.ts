@@ -191,6 +191,7 @@ export const NOTIFICATION_EVENT_TYPES = [
   'offer',
   'birthday',
   're_engagement',
+  'staff_new_booking',
 ] as const;
 export type NotificationEventType = (typeof NOTIFICATION_EVENT_TYPES)[number];
 export const NOTIFICATION_EVENT_LABELS: Record<NotificationEventType, string> = {
@@ -203,6 +204,7 @@ export const NOTIFICATION_EVENT_LABELS: Record<NotificationEventType, string> = 
   offer: 'Offer',
   birthday: 'Birthday wishes',
   re_engagement: 'We miss you',
+  staff_new_booking: 'New booking (team)',
 };
 export const NOTIFICATION_EVENT_CATEGORY: Record<NotificationEventType, NotificationCategory> = {
   appointment_confirmation: 'appointment',
@@ -214,6 +216,7 @@ export const NOTIFICATION_EVENT_CATEGORY: Record<NotificationEventType, Notifica
   offer: 'offers',
   birthday: 'offers',
   re_engagement: 'offers',
+  staff_new_booking: 'appointment',
 };
 
 export const NOTIFICATION_STATUSES = [

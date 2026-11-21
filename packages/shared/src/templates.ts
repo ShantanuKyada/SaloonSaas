@@ -13,6 +13,7 @@ export const TEMPLATE_VARIABLES: Record<NotificationEventType, string[]> = {
   offer: ['customerName', 'salonName', 'message'],
   birthday: ['customerName', 'salonName', 'message'],
   re_engagement: ['customerName', 'salonName', 'message', 'daysSinceLastVisit'],
+  staff_new_booking: ['staffName', 'customerName', 'salonName', 'branchName', 'services', 'date', 'time', 'bookingNumber'],
 };
 
 export function renderTemplate(template: string, variables: Record<string, string | number | null | undefined>): string {
@@ -64,6 +65,8 @@ const whatsappAndSms: Array<[NotificationEventType, string, string]> = [
   ['offer', 'Offer', 'Hi {{customerName}}, {{message}} — {{salonName}}'],
   ['birthday', 'Birthday wishes', 'Happy birthday {{customerName}}! {{message}} — {{salonName}}'],
   ['re_engagement', 'We miss you', 'Hi {{customerName}}, we miss you at {{salonName}}! {{message}}'],
+  // Sent to the team member, not the customer.
+  ['staff_new_booking', 'New booking (team)', 'Hi {{staffName}}, new booking: {{customerName}} for {{services}} on {{date}} at {{time}} ({{branchName}}). Booking no: {{bookingNumber}}'],
 ];
 
 export const DEFAULT_TEMPLATES: DefaultTemplate[] = [
@@ -73,7 +76,7 @@ export const DEFAULT_TEMPLATES: DefaultTemplate[] = [
     eventType,
     channel: 'email' as const,
     name,
-    subject: `${name} — {{salonName}}`,
+    subject: eventType === 'staff_new_booking' ? 'New booking — {{salonName}}' : `${name} — {{salonName}}`,
     body,
   })),
 ];

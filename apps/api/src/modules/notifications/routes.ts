@@ -47,7 +47,7 @@ templates.get('/', { summary: 'Message templates for every event and channel', p
 );
 
 const SAMPLE: Record<string, string> = {
-  customerName: 'Meera', salonName: 'Glow Salon', branchName: 'Rajkot', services: 'Hair Spa', date: 'Sat, 15 October', time: '5:00 PM', staff: 'Rahul',
+  customerName: 'Meera', staffName: 'Rahul', salonName: 'Glow Salon', branchName: 'Rajkot', services: 'Hair Spa', date: 'Sat, 15 October', time: '5:00 PM', staff: 'Rahul',
   bookingNumber: 'BK261015-001', branchPhone: '+91 98765 43210', manageLink: 'https://example.com/b/abc', amount: '₹4,500', receiptNumber: 'RCT-RJT-2627-00012',
   method: 'UPI', balance: '₹0', message: 'Enjoy 10% off this week.', daysSinceLastVisit: '60',
 };
@@ -91,6 +91,7 @@ logs.get('/', { summary: 'Delivery log (sent, delivered, read, failed)', permiss
     let base = t
       .selectFrom('notifications as n')
       .leftJoin('customers as c', 'c.id', 'n.customerId')
+      .leftJoin('staff as st', 'st.id', 'n.staffId')
       .innerJoin('organizations as o', 'o.id', 'n.organizationId')
       .where('n.organizationId', '=', orgId)
       .where((eb) => eb.or([eb('n.branchId', 'is', null), eb('n.branchId', 'in', auth.branchIds.length ? auth.branchIds : ['00000000-0000-0000-0000-000000000000'])]));
@@ -102,7 +103,7 @@ logs.get('/', { summary: 'Delivery log (sent, delivered, read, failed)', permiss
     if (query.search) base = base.where(customerSearchCondition(query.search));
     const { n } = await base.select((eb) => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
     const rows = await base
-      .select(['n.id', 'n.createdAt', 'n.eventType', 'n.category', 'n.channel', 'n.recipient', 'n.customerId', 'c.fullName as customerName', 'n.status', 'n.statusReason', 'n.attempts', 'n.scheduledFor', 'n.sentAt', 'n.deliveredAt', 'n.readAt', 'n.lastError', 'n.body'])
+      .select(['n.id', 'n.createdAt', 'n.eventType', 'n.category', 'n.channel', 'n.recipient', 'n.customerId', 'c.fullName as customerName', 'st.displayName as staffName', 'n.status', 'n.statusReason', 'n.attempts', 'n.scheduledFor', 'n.sentAt', 'n.deliveredAt', 'n.readAt', 'n.lastError', 'n.body'])
       .orderBy('n.createdAt', 'desc')
       .limit(query.pageSize)
       .offset((query.page - 1) * query.pageSize)
@@ -115,7 +116,8 @@ logs.get('/', { summary: 'Delivery log (sent, delivered, read, failed)', permiss
       channel: r.channel as NotificationLogItem['channel'],
       recipient: visible ? r.recipient : '••••••',
       customerId: r.customerId,
-      customerName: r.customerName,
+      // Messages to a team member (new booking) show who on the team received them.
+      customerName: r.customerName ?? (r.staffName ? `${r.staffName} (team)` : null),
       status: r.status as NotificationLogItem['status'],
       statusReason: r.statusReason,
       attempts: r.attempts,

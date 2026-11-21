@@ -15,6 +15,7 @@ import { loadAttendanceDays, recomputeBranch } from '../attendance/service.js';
 import { computeDayAvailability } from '../scheduling/routes.js';
 import { loadDayContext, loadStaffDays } from '../scheduling/loader.js';
 import { leaveConflicts } from '../staff/routes.js';
+import { notifyStaff } from '../staff-notifications/service.js';
 
 // Self-service for team members (the Staff role): their schedule, leave requests, attendance and requests to move
 // their own appointments. Everything here is scoped to the team member the login is linked to. The front desk answers
@@ -266,7 +267,11 @@ desk.post('/:id/approve', { summary: 'Approve: move the booking to the proposed 
     }
     await moveAppointment(t, auth, appt.id, { version: appt.version, itemId: first.id, startAt: r.proposedStartAt.toISOString(), notifyCustomer: body.notifyCustomer, allowOutsideHours: false });
     await t.updateTable('appointmentChangeRequests').set({ status: 'approved', decidedBy: auth.userId, decidedAt: new Date(), decisionNote: body.note ?? null }).where('id', '=', r.id).execute();
-    return (await changeRequestDtos(t, orgId, { ids: [r.id] }))[0]!;
+    const dto = (await changeRequestDtos(t, orgId, { ids: [r.id] }))[0]!;
+    // One notice for the team member, "approved", instead of also "booking moved" for the same change.
+    await t.deleteFrom('staffNotifications').where('appointmentId', '=', appt.id).where('staffId', '=', r.staffId).where('kind', '=', 'booking_moved').where('createdAt', '=', sql<Date>`now()`).execute();
+    await answerNotice(t, auth, orgId, dto, `Approved: ${dto.customerName} moved to ${await localWhen(t, orgId, dto.branchId, dto.proposedStartAt)}`, body.note ?? null);
+    return dto;
   }),
 );
 
@@ -275,7 +280,40 @@ desk.post('/:id/decline', { summary: 'Decline: the booking stays as it is', perm
     const { orgId, r } = await pendingRequest(t, auth, params.id!);
     await t.updateTable('appointmentChangeRequests').set({ status: 'declined', decidedBy: auth.userId, decidedAt: new Date(), decisionNote: body.note ?? null }).where('id', '=', r.id).execute();
     await audit(t, auth, { action: 'appointment.change_declined', entityType: 'appointment', entityId: r.appointmentId, branchId: r.branchId, summary: 'Request to move a booking declined', after: { note: body.note ?? null } });
-    return (await changeRequestDtos(t, orgId, { ids: [r.id] }))[0]!;
+    const dto = (await changeRequestDtos(t, orgId, { ids: [r.id] }))[0]!;
+    await answerNotice(t, auth, orgId, dto, `Declined: ${dto.customerName} stays at ${await localWhen(t, orgId, dto.branchId, dto.currentStartAt)}`, body.note ?? null);
+    return dto;
+  }),
+);
+
+async function localWhen(t: Tx, orgId: string, branchId: string, iso: string): Promise<string> {
+  const branch = await loadBranch(t, orgId, branchId);
+  return DateTime.fromISO(iso).setZone(branch.timezone).toFormat('ccc d LLL, h:mm a');
+}
+
+async function answerNotice(t: Tx, auth: AuthContext, orgId: string, r: ChangeRequestDto, title: string, note: string | null): Promise<void> {
+  await notifyStaff(t, auth, orgId, [{ staffId: r.staffId, branchId: r.branchId, kind: 'request_answered', title, body: note ? `Front desk: “${note}”` : null, appointmentId: r.appointmentId }]);
+}
+
+// ───────────── /me/notifications: the bell ─────────────
+mine.get('/notifications', { summary: 'My latest updates (new bookings, changes, answers) and how many are unread', permissions: [...OWN] }, async ({ tx, auth }) =>
+  tx(async (t) => {
+    const m = await me(t, auth);
+    const [items, unread] = await Promise.all([
+      t.selectFrom('staffNotifications').select(['id', 'kind', 'title', 'body', 'link', 'appointmentId', 'readAt', 'createdAt']).where('organizationId', '=', m.orgId).where('staffId', '=', m.staffId).orderBy('createdAt', 'desc').limit(30).execute(),
+      t.selectFrom('staffNotifications').select((eb) => eb.fn.countAll<number>().as('n')).where('staffId', '=', m.staffId).where('readAt', 'is', null).executeTakeFirstOrThrow(),
+    ]);
+    return { unread: Number(unread.n), items: items.map((i) => ({ ...i, readAt: i.readAt?.toISOString() ?? null, createdAt: i.createdAt.toISOString() })) };
+  }),
+);
+
+mine.post('/notifications/read', { summary: 'Mark updates as read (all of them when no ids are given)', permissions: [...OWN], body: z.object({ ids: z.array(z.uuid()).max(100).optional() }), status: 200 }, async ({ tx, auth, body }) =>
+  tx(async (t) => {
+    const m = await me(t, auth);
+    let q = t.updateTable('staffNotifications').set({ readAt: new Date() }).where('staffId', '=', m.staffId).where('readAt', 'is', null);
+    if (body.ids?.length) q = q.where('id', 'in', body.ids);
+    const r = await q.executeTakeFirst();
+    return { marked: Number(r.numUpdatedRows ?? 0) };
   }),
 );
 

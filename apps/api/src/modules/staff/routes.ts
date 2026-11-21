@@ -1,3 +1,4 @@
+import { DateTime } from 'luxon';
 import {
   leaveDecisionSchema,
   leaveSchema,
@@ -15,6 +16,7 @@ import { z } from 'zod';
 import { audit } from '../../core/audit.js';
 import { assertBranchAccess, branchFilter, hasPermission, requireOrgId, type AuthContext } from '../../core/auth-context.js';
 import { AppError, notFound } from '../../core/errors.js';
+import { notifyStaff } from '../staff-notifications/service.js';
 import { createRouter, paged } from '../../core/router.js';
 import { localRangeToUtc } from '../../core/time.js';
 import { loadBranch, loadOrg, optionalPhone } from '../../core/validation.js';
@@ -515,6 +517,11 @@ leaves.patch('/:id', { summary: 'Approve, reject or cancel leave', permissions: 
       .executeTakeFirstOrThrow();
     const conflicts = body.status === 'approved' && after.halfDay === 'none' ? await leaveConflicts(t, staff.id, after.startDate, after.endDate, branch.timezone) : [];
     await audit(t, auth, { action: `staff.leave_${body.status}`, entityType: 'staff_leave', entityId: after.id, branchId: staff.branchId, before, after });
+    if (before.status === 'pending' && body.status !== 'cancelled') {
+      const day = (d: string) => DateTime.fromISO(d).toFormat('ccc d LLL');
+      const dates = after.startDate === after.endDate ? day(after.startDate) : `${day(after.startDate)} – ${day(after.endDate)}`;
+      await notifyStaff(t, auth, orgId, [{ staffId: staff.id, branchId: staff.branchId, kind: 'leave_answered', title: body.status === 'approved' ? `Leave approved: ${dates}` : `Leave declined: ${dates}`, link: '/my-schedule' }]);
+    }
     return { leave: after, conflicts };
   }),
 );
