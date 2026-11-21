@@ -23,6 +23,23 @@ export type JsonValue = JsonArray | JsonObject | JsonPrimitive;
 
 export type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
+export interface AppointmentChangeRequests {
+  appointmentId: string;
+  branchId: string;
+  createdAt: Generated<Timestamp>;
+  currentStartAt: Timestamp;
+  decidedAt: Timestamp | null;
+  decidedBy: string | null;
+  decisionNote: string | null;
+  id: Generated<string>;
+  organizationId: string;
+  proposedStartAt: Timestamp;
+  reason: string | null;
+  requestedBy: string;
+  staffId: string;
+  status: Generated<string>;
+}
+
 export interface AppointmentEvents {
   actorUserId: string | null;
   appointmentId: string;
@@ -968,6 +985,7 @@ export interface Users {
 }
 
 export interface DB {
+  appointmentChangeRequests: AppointmentChangeRequests;
   appointmentEvents: AppointmentEvents;
   appointmentItems: AppointmentItems;
   appointments: Appointments;

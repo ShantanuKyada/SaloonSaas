@@ -160,6 +160,19 @@ export type LeaveInput = z.input<typeof leaveSchema>;
 
 export const leaveDecisionSchema = z.object({ status: z.enum(['approved', 'rejected', 'cancelled']) });
 
+/** A team member asking for leave for themselves: it always waits for a manager's decision. */
+export const leaveRequestSchema = z
+  .object({
+    leaveType: z.enum(LEAVE_TYPES).default('casual'),
+    startDate: zDate,
+    endDate: zDate,
+    halfDay: z.enum(HALF_DAY_OPTIONS).default('none'),
+    reason: optionalText(500),
+  })
+  .refine((v) => v.endDate >= v.startDate, { message: 'End date must be on or after start date', path: ['endDate'] })
+  .refine((v) => v.halfDay === 'none' || v.startDate === v.endDate, { message: 'Half-day leave must be a single day', path: ['halfDay'] });
+export type LeaveRequestInput = z.input<typeof leaveRequestSchema>;
+
 export const timeBlockSchema = z
   .object({
     staffId: zId,

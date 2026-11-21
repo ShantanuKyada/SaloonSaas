@@ -291,6 +291,41 @@ export interface AppointmentItemDto {
   buyPackageName: string | null;
 }
 
+/** A team member's request to move one of their appointments, as both they and the front desk see it. */
+export interface ChangeRequestDto {
+  id: string;
+  appointmentId: string;
+  bookingNumber: string;
+  branchId: string;
+  branchName: string;
+  staffId: string;
+  staffName: string;
+  customerName: string;
+  services: string;
+  appointmentStatus: AppointmentStatus;
+  status: 'pending' | 'approved' | 'declined' | 'cancelled';
+  currentStartAt: string;
+  proposedStartAt: string;
+  reason: string | null;
+  requestedByName: string;
+  decidedByName: string | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string;
+}
+
+/** One day of a team member's own schedule. Times are HH:mm in the branch's time zone. */
+export interface MyScheduleDay {
+  date: string;
+  status: 'working' | 'day_off' | 'leave' | 'half_leave' | 'holiday' | 'branch_closed';
+  hours: Array<{ start: string; end: string }>;
+  breaks: Array<{ start: string; end: string; label: string }>;
+  blocks: Array<{ start: string; end: string; reason: string }>;
+  leaveType: string | null;
+  holiday: string | null;
+  appointments: number;
+}
+
 export interface AppointmentDto {
   id: string;
   bookingNumber: string;

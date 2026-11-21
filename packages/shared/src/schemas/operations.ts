@@ -182,6 +182,20 @@ export const appointmentStatusSchema = z.object({
 });
 export type AppointmentStatusInput = z.input<typeof appointmentStatusSchema>;
 
+/** A team member asking the front desk to move one of their own appointments to a new start time. */
+export const changeRequestSchema = z.object({
+  appointmentId: zId,
+  proposedStartAt: zDateTime,
+  reason: optionalText(300),
+});
+export type ChangeRequestInput = z.input<typeof changeRequestSchema>;
+
+/** The front desk's answer: approving moves the booking (and tells the customer); declining can say why. */
+export const changeDecisionSchema = z.object({
+  note: optionalText(300),
+  notifyCustomer: z.boolean().default(true),
+});
+
 export const appointmentListQuery = paginationQuery.extend({
   branchId: zId.optional(),
   from: zDate.optional(),
