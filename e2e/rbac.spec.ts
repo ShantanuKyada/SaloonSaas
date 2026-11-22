@@ -28,7 +28,7 @@ test.describe('Roles and permissions', () => {
 
   test('a branch manager only ever sees their own branch', async ({ page }) => {
     await signInAs(page, USERS.rajkotManager, '/today');
-    await expect(page.getByRole('heading', { name: 'Today at the salon' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'How is Glow Rajkot doing?' })).toBeVisible();
     await expect(page.getByText('Glow Rajkot').first()).toBeVisible();
     await expect(page.getByText('Glow Ahmedabad')).toHaveCount(0);
   });

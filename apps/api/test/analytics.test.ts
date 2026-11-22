@@ -76,8 +76,12 @@ describe('owner dashboard', () => {
     const ownBranch = await authed(managerA.token).get(`/dashboard/branch?branchId=${t.branchId}`);
     expect(ownBranch.status).toBe(200);
     expect(ownBranch.body.data.today).toMatchObject({ revenue: 440000, outstanding: 120000 });
-    const ownerOnly = await authed(managerA.token).get(`/dashboard/owner?from=${today}&to=${today}`);
-    expect(ownerOnly.status).toBe(403);
+    // The business dashboard is open to the manager, for their own branch only.
+    const story = await authed(managerA.token).get(`/dashboard/owner?from=${today}&to=${today}`);
+    expect(story.status).toBe(200);
+    expect(story.body.data.revenue.today.value).toBe(440000);
+    expect(story.body.data.branches.map((b: { branchId: string }) => b.branchId)).toEqual([t.branchId]);
+    expect((await authed(managerA.token).get(`/dashboard/owner?from=${today}&to=${today}&branchId=${branchB}`)).status).toBe(403);
   });
 });
 

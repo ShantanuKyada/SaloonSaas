@@ -8,10 +8,12 @@ import { Segmented } from '@/components/ui/form';
 import { Bars, TrendChart } from '@/components/ui/chart';
 import { ChartCard, Meter, RankedBars, SplitBar, StorySection } from '@/components/ui/viz';
 import { api } from '@/lib/api';
+import { useCan } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { dateRangePreset, deltaPercent, fmtDay, fmtTime, pct, PRESET_LABELS, todayIn } from '@/lib/format';
 import { cn } from '@/lib/utils';
-import type { OperationalAlert, StatValue } from '@salon/shared';
+import type { OperationalAlert, SalonNow, StatValue } from '@salon/shared';
+import { SalonNowTiles, StaffNowList } from './LiveStatus';
 
 interface Owner {
   asOf: string;
@@ -32,20 +34,33 @@ interface Owner {
 
 type Preset = keyof typeof PRESET_LABELS;
 
+interface StaffMetric { staffId: string; staffName: string; branchName: string; completedAppointments: number; revenue: number; servicesPerformed: number; customers: number; bookedMinutes: number; availableMinutes: number; utilizationPercent: number }
+
+export function Component() {
+  return <BusinessDashboard variant="owner" />;
+}
+
 /**
  * "How is the salon doing?" told as a story, top to bottom: what needs attention, the money (one headline number and
- * its trend), today, what is booked and what sells, the customers, and the branches side by side. Every figure opens
- * the page or report behind it for the same period, and the period filter above scopes everything.
+ * its trend), today, what is booked and what sells, the team, the customers, and the branches side by side. Every
+ * figure opens the page or report behind it for the same period, and the period filter above scopes everything.
+ * The branch manager's "Today" page is the same story for their branch, with the salon right now (who is serving,
+ * who is waiting, each team member's status) updating live in the Today section.
  */
-export function Component() {
+export function BusinessDashboard({ variant }: { variant: 'owner' | 'branch' }) {
   const money = useMoney();
   const compact = useCompactMoney();
-  const { scopeBranchId, timezone, canChoose, selection } = useBranch();
+  const can = useCan();
+  const { scopeBranchId, timezone, canChoose, selection, branch } = useBranch();
   const today = todayIn(timezone);
   const [preset, setPreset] = useState<Preset>('month');
   const range = dateRangePreset(preset, today);
   const q = useQuery({ queryKey: ['dashboard', 'owner', scopeBranchId, range.from, range.to], queryFn: () => api.get<Owner>('/dashboard/owner', { branchId: scopeBranchId, ...range }), refetchInterval: 60_000, placeholderData: (p) => p });
   const d = q.data;
+  const live = useQuery({ queryKey: ['dashboard', 'now', scopeBranchId], queryFn: () => api.get<SalonNow>('/dashboard/now', { branchId: scopeBranchId }), refetchInterval: 20_000, enabled: variant === 'branch' && !!scopeBranchId });
+  const team = useQuery({ queryKey: ['analytics', 'staff', scopeBranchId, range.from, range.to], queryFn: () => api.get<{ staff: StaffMetric[] }>('/analytics/staff', { branchId: scopeBranchId, ...range }), enabled: can('staff.performance'), placeholderData: (p) => p });
+  const staff = [...(team.data?.staff ?? [])].sort((a, b) => b.revenue - a.revenue);
+  const oneBranch = variant === 'branch' && !!scopeBranchId;
   // A new period keeps the previous numbers on screen, dimmed, until the new ones arrive: no flash, no jump.
   const refreshing = q.isFetching && q.isPlaceholderData;
   const xFormat = (v: string) => (d?.trend.bucket === 'month' ? new Date(`${v}T12:00:00Z`).toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' }) : fmtDay(v, timezone).replace(/^\w+, /, ''));
@@ -54,7 +69,7 @@ export function Component() {
 
   return (
     <div className="space-y-8">
-      <PageHeader title="How is the salon doing?" description={`${PRESET_LABELS[preset]} · ${period}${selection === 'all' && canChoose ? ' · All branches' : ''}`} actions={<Segmented label="Period" value={preset} onChange={setPreset} options={(Object.keys(PRESET_LABELS) as Preset[]).map((k) => ({ value: k, label: PRESET_LABELS[k] }))} />} />
+      <PageHeader title={oneBranch ? `How is ${branch.name} doing?` : 'How is the salon doing?'} description={`${PRESET_LABELS[preset]} · ${period}${selection === 'all' && canChoose ? ' · All branches' : ''}`} actions={<Segmented label="Period" value={preset} onChange={setPreset} options={(Object.keys(PRESET_LABELS) as Preset[]).map((k) => ({ value: k, label: PRESET_LABELS[k] }))} />} />
       {q.isError && !d && <ErrorState error={q.error} onRetry={() => void q.refetch()} />}
 
       <div className={cn('space-y-8 transition-opacity', refreshing && 'opacity-60')} aria-busy={refreshing || !d}>
@@ -106,6 +121,7 @@ export function Component() {
 
         {/* ── Today ─────────────────────────────────────────────── */}
         <StorySection id="today" title="Today" story={d && todayStory(d)}>
+          {oneBranch && live.data && <div className="mb-4"><SalonNowTiles now={live.data} /></div>}
           <div className="grid gap-4 lg:grid-cols-3">
             <LinkCard to="/appointments?range=today" title="Appointments today" action="Open today’s appointments">
               <p className="text-3xl font-semibold tracking-tight text-fg">{d?.appointments.today.total ?? '…'}</p>
@@ -120,7 +136,7 @@ export function Component() {
                 </div>
               )}
             </LinkCard>
-            <LinkCard to="/staff/attendance" title="Team right now" action="Open attendance">
+            {oneBranch && live.data ? <StaffNowList staff={live.data.staff} /> : <LinkCard to="/staff/attendance" title="Team right now" action="Open attendance">
               <p className="text-3xl font-semibold tracking-tight text-fg">{d ? `${d.staff.available} free` : '…'}</p>
               {d && (
                 <div className="mt-3">
@@ -132,7 +148,7 @@ export function Component() {
                   <p className="mt-2 text-xs text-muted">{d.staff.present} of {d.staff.total} came in today</p>
                 </div>
               )}
-            </LinkCard>
+            </LinkCard>}
             <Card padded={false}>
               <div className="flex items-center justify-between gap-2 p-4 pb-2">
                 <h3 className="text-base font-semibold">Coming up</h3>
@@ -172,6 +188,33 @@ export function Component() {
             </Card>
           </div>
         </StorySection>
+
+        {/* ── Team ──────────────────────────────────────────────── */}
+        {can('staff.performance') && (
+          <StorySection id="team" title="Team" story={team.data && teamStory(staff, money)}>
+            <div className="grid gap-4 xl:grid-cols-5">
+              <Card className="xl:col-span-3">
+                <CardHeader title="Revenue by team member" description="Services they performed in this period" actions={<Link to={report('staff-revenue')} className="text-sm font-medium text-primary hover:underline">Report</Link>} />
+                {team.data ? <RankedBars format={(v) => money(v)} empty="No services billed in this period." rows={staff.filter((m) => m.revenue > 0).slice(0, 8).map((m) => ({ key: m.staffId, label: m.staffName, value: m.revenue, to: `/staff/${m.staffId}`, note: `${m.completedAppointments} ${m.completedAppointments === 1 ? 'appointment' : 'appointments'} · ${m.customers} ${m.customers === 1 ? 'customer' : 'customers'}${selection === 'all' && canChoose ? ` · ${m.branchName}` : ''}` }))} /> : <div className="skeleton h-48" />}
+              </Card>
+              <Card className="xl:col-span-2">
+                <CardHeader title="How busy each person was" description="Booked time out of their working hours" actions={<Link to={report('staff-utilization')} className="text-sm font-medium text-primary hover:underline">Report</Link>} />
+                {team.data ? (
+                  staff.length === 0 ? <p className="text-sm text-muted">No team members in this branch yet.</p> : (
+                    <ul className="space-y-3">
+                      {[...staff].sort((a, b) => b.utilizationPercent - a.utilizationPercent).slice(0, 8).map((m) => (
+                        <li key={m.staffId}>
+                          <div className="mb-1 flex items-baseline justify-between gap-2 text-sm"><span className="truncate font-medium">{m.staffName}</span><span className="tabular-nums text-muted">{m.utilizationPercent}%</span></div>
+                          <Meter value={m.utilizationPercent} label={`${m.staffName}: booked ${m.utilizationPercent}% of working time`} />
+                        </li>
+                      ))}
+                    </ul>
+                  )
+                ) : <div className="skeleton h-48" />}
+              </Card>
+            </div>
+          </StorySection>
+        )}
 
         {/* ── Customers ─────────────────────────────────────────── */}
         <StorySection id="customers" title="Customers" story={d && customersStory(d)}>
@@ -263,7 +306,12 @@ function moneyStory(d: Owner, money: Money): ReactNode {
 function todayStory(d: Owner): ReactNode {
   const t = d.appointments.today;
   const visits = t.total === 0 ? 'No appointments today yet' : `${t.completed} of ${t.total} appointments done, ${t.pending} to go`;
-  const team = d.staff.present === 0 ? 'no one from the team has come in yet' : `${d.staff.available} of ${d.staff.present} team members ${d.staff.available === 1 ? 'is' : 'are'} free right now`;
+  const { present, available } = d.staff;
+  const team =
+    present === 0 ? 'no one from the team has come in yet'
+    : present === 1 ? `the one team member in today ${available ? 'is free' : 'is not free'} right now`
+    : available === 0 ? `none of the ${present} team members in today is free right now`
+    : `${available} of the ${present} team members in today ${available === 1 ? 'is' : 'are'} free right now`;
   return `${visits}; ${team}.`;
 }
 
@@ -273,6 +321,15 @@ function bookingsStory(d: Owner, money: Money): ReactNode {
   const top = d.topServices.byRevenue[0];
   const first = ended === 0 ? 'No finished bookings in this period yet' : `${pct(sum.completed, ended)}% of bookings were completed, with ${sum.cancelled} cancelled and ${sum.noShow} no-show${sum.noShow === 1 ? '' : 's'}`;
   return `${first}.${top ? ` ${top.name} brings in the most (${money(top.revenue)}).` : ''}`;
+}
+
+function teamStory(staff: StaffMetric[], money: Money): ReactNode {
+  const earners = staff.filter((m) => m.revenue > 0);
+  if (earners.length === 0) return 'Nobody has billed a service in this period yet.';
+  const booked = staff.reduce((a, m) => a + m.bookedMinutes, 0);
+  const available = staff.reduce((a, m) => a + m.availableMinutes, 0);
+  const busy = available > 0 ? Math.round((booked / available) * 100) : null;
+  return <><strong className="font-semibold text-fg">{earners[0]!.staffName}</strong> brought in the most, {money(earners[0]!.revenue)}.{busy !== null && <> The team was booked for <strong className="font-semibold text-fg">{busy}%</strong> of its working time.</>}</>;
 }
 
 function customersStory(d: Owner): ReactNode {

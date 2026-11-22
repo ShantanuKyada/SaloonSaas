@@ -9,6 +9,7 @@ import type { Tx } from '../../db/tenant.js';
 
 const NONE = '00000000-0000-0000-0000-000000000000';
 import { loadSalonNow, sumNow, type BranchNow } from './now.js';
+import { customerFavourite, customerInBranches, customerMetrics, customerScope } from '../customers/service.js';
 
 const MINUTE = 60_000;
 
@@ -296,7 +297,8 @@ export async function ownerDashboard(tx: Tx, auth: AuthContext, orgId: string, q
     .select([
       sql<number>`count(*) filter (where status not in ('cancelled','no_show','waiting'))`.as('total'),
       sql<number>`count(*) filter (where status = 'completed')`.as('completed'),
-      sql<number>`count(*) filter (where status in ('scheduled','confirmed','checked_in','in_service','waiting'))`.as('pending'),
+      // Walk-ins still waiting in the queue are not appointments yet (the live "Waiting" figure counts them).
+      sql<number>`count(*) filter (where status in ('scheduled','confirmed','checked_in','in_service'))`.as('pending'),
       sql<number>`count(*) filter (where status = 'cancelled')`.as('cancelled'),
       sql<number>`count(*) filter (where status = 'no_show')`.as('noShow'),
     ])
@@ -305,17 +307,23 @@ export async function ownerDashboard(tx: Tx, auth: AuthContext, orgId: string, q
     .where('localDate', '=', today)
     .executeTakeFirstOrThrow();
 
-  const customerCounts = await tx
-    .selectFrom('customers as c')
-    .leftJoin('customerStats as cs', 'cs.customerId', 'c.id')
-    .select([
-      sql<number>`count(*) filter (where c.status = 'active')`.as('active'),
-      sql<number>`count(*) filter (where c.status = 'active' and ${sql.ref('c.registered_at')} >= ${new Date(Date.parse(`${range.from}T00:00:00Z`) - 86400_000)} and (c.registered_at at time zone ${org.timezone}::text)::date between ${range.from}::date and ${range.to}::date)`.as('newCustomers'),
-      sql<number>`count(*) filter (where c.status = 'active' and cs.visit_count > 0 and coalesce(cs.last_visit_at, c.registered_at) < now() - interval '60 days')`.as('inactive'),
-      sql<number>`coalesce(percentile_cont(0.9) within group (order by cs.lifetime_spend) filter (where cs.lifetime_spend > 0), 0)`.as('p90'),
-    ])
-    .where('c.organizationId', '=', orgId)
-    .executeTakeFirstOrThrow();
+  // Customers of the branch shown (or of the login's branches), with their numbers counted there.
+  const scope = customerScope(auth, q.branchId);
+  const cm = customerMetrics(scope);
+  const per = sql`(select c.id, c.full_name, c.status, c.registered_at, c.registered_branch_id, ${cm.visits} as visit_count, ${cm.spend} as lifetime_spend, ${cm.lastVisit} as last_visit_at,
+                          ${customerFavourite('service', scope)} as favorite_service, ${customerFavourite('staff', scope)} as favorite_staff
+                     from customers c left join customer_stats cs on cs.customer_id = c.id
+                    where c.organization_id = ${orgId} and ${scope ? customerInBranches(scope) : sql`true`})`;
+  const customerCounts = (
+    await sql<{ active: number; newCustomers: number; inactive: number; p90: number }>`
+      select count(*) filter (where c.status = 'active') as active,
+             count(*) filter (where c.status = 'active' and c.registered_at >= ${new Date(Date.parse(`${range.from}T00:00:00Z`) - 86400_000)}
+                              and (c.registered_at at time zone ${org.timezone}::text)::date between ${range.from}::date and ${range.to}::date
+                              and (${!scope} or c.registered_branch_id = any(${scope ?? []}::uuid[]))) as "newCustomers",
+             count(*) filter (where c.status = 'active' and c.visit_count > 0 and coalesce(c.last_visit_at, c.registered_at) < now() - interval '60 days') as inactive,
+             coalesce(percentile_cont(0.9) within group (order by c.lifetime_spend) filter (where c.lifetime_spend > 0), 0) as p90
+        from ${per} c`.execute(tx)
+  ).rows[0]!;
   const served = await tx
     .selectFrom('invoices as i')
     .select([
@@ -328,13 +336,9 @@ export async function ownerDashboard(tx: Tx, auth: AuthContext, orgId: string, q
     .where('i.invoiceDate', '>=', range.from)
     .where('i.invoiceDate', '<=', range.to)
     .executeTakeFirstOrThrow();
-  const highValue = await tx
-    .selectFrom('customerStats')
-    .select((eb) => eb.fn.countAll<number>().as('n'))
-    .where('organizationId', '=', orgId)
-    .where('lifetimeSpend', '>', 0)
-    .where('lifetimeSpend', '>=', Math.round(Number(customerCounts.p90)))
-    .executeTakeFirstOrThrow();
+  const highValue = (
+    await sql<{ n: number }>`select count(*) as n from ${per} c where c.status = 'active' and c.lifetime_spend > 0 and c.lifetime_spend >= ${Math.round(Number(customerCounts.p90))}`.execute(tx)
+  ).rows[0]!;
 
   const schedule = await tx
     .selectFrom('appointments as a')
@@ -357,18 +361,12 @@ export async function ownerDashboard(tx: Tx, auth: AuthContext, orgId: string, q
     .limit(12)
     .execute();
 
-  const topCustomers = await tx
-    .selectFrom('customerStats as cs')
-    .innerJoin('customers as c', 'c.id', 'cs.customerId')
-    .leftJoin('services as fs', 'fs.id', 'cs.favoriteServiceId')
-    .leftJoin('staff as fst', 'fst.id', 'cs.favoriteStaffId')
-    .select(['c.id', 'c.fullName', 'cs.visitCount', 'cs.lifetimeSpend', 'cs.lastVisitAt', 'fs.name as favoriteService', 'fst.displayName as favoriteStaff'])
-    .where('cs.organizationId', '=', orgId)
-    .where('c.status', '=', 'active')
-    .where('cs.lifetimeSpend', '>', 0)
-    .orderBy('cs.lifetimeSpend', 'desc')
-    .limit(5)
-    .execute();
+  const topCustomers = (
+    await sql<{ id: string; fullName: string; visitCount: number; lifetimeSpend: number; lastVisitAt: Date | null; favoriteService: string | null; favoriteStaff: string | null }>`
+      select c.id, c.full_name as "fullName", c.visit_count as "visitCount", c.lifetime_spend as "lifetimeSpend", c.last_visit_at as "lastVisitAt",
+             c.favorite_service as "favoriteService", c.favorite_staff as "favoriteStaff"
+        from ${per} c where c.status = 'active' and c.lifetime_spend > 0 order by c.lifetime_spend desc limit 5`.execute(tx)
+  ).rows.map((c) => ({ ...c, visitCount: Number(c.visitCount), lifetimeSpend: Number(c.lifetimeSpend), lastVisitAt: c.lastVisitAt ? new Date(c.lastVisitAt) : null }));
 
   const t = sumNow(nowRows);
   const alerts = await buildAlerts(tx, auth, orgId, branches, org.timezone, org.currency, nowRows);
@@ -395,7 +393,7 @@ export async function ownerDashboard(tx: Tx, auth: AuthContext, orgId: string, q
       returning: Number(served.returning),
       totalActive: Number(customerCounts.active),
       inactive60Days: Number(customerCounts.inactive),
-      highValue: { count: highValue.n, threshold: Math.round(Number(customerCounts.p90)) },
+      highValue: { count: Number(highValue.n), threshold: Math.round(Number(customerCounts.p90)) },
       repeatRatePercent: retention,
     },
     staff: { total: t.staffTotal, present: t.staffTotal - t.staffAbsent - t.staffOnLeave - nowRows.reduce((a, r) => a + r.staff.filter((s) => s.state === 'off').length, 0), absent: t.staffAbsent, onLeave: t.staffOnLeave, busy: t.staffServing, available: t.staffAvailable },

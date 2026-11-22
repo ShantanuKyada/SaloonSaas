@@ -14,13 +14,13 @@ import { sql } from 'kysely';
 import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { audit } from '../../core/audit.js';
-import { requireOrgId } from '../../core/auth-context.js';
+import { nonEmpty, requireOrgId, type AuthContext } from '../../core/auth-context.js';
 import { safeEqual } from '../../core/crypto.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { createRouter, paged } from '../../core/router.js';
 import { localDateConditions } from '../../core/sql.js';
 import { loadSettings } from '../../core/validation.js';
-import { canSeeContact, customerSearchCondition } from '../customers/service.js';
+import { canSeeContact, customerInBranches, customerScope, customerSearchCondition } from '../customers/service.js';
 import { cancelCampaign, countRecipients, launchCampaign } from './campaigns.js';
 import { applyDeliveryStatus } from './dispatcher.js';
 import { availableChannels } from './outbox.js';
@@ -45,6 +45,16 @@ templates.get('/', { summary: 'Message templates for every event and channel', p
     }));
   }),
 );
+
+/**
+ * Messages a login may see: those of their branches, and salon-wide ones (offers, birthdays). For logins limited to
+ * some branches, salon-wide messages only to customers of those branches. Needs notifications as n, customers as c.
+ */
+function visibleMessages(auth: AuthContext) {
+  const scope = customerScope(auth);
+  const mine = sql<boolean>`n.branch_id = any(${nonEmpty(auth.branchIds)}::uuid[])`;
+  return scope ? sql<boolean>`(${mine} or (n.branch_id is null and c.id is not null and ${customerInBranches(scope)}))` : sql<boolean>`(n.branch_id is null or ${mine})`;
+}
 
 const SAMPLE: Record<string, string> = {
   customerName: 'Meera', staffName: 'Rahul', salonName: 'Glow Salon', branchName: 'Rajkot', services: 'Hair Spa', date: 'Sat, 15 October', time: '5:00 PM', staff: 'Rahul',
@@ -94,7 +104,7 @@ logs.get('/', { summary: 'Delivery log (sent, delivered, read, failed)', permiss
       .leftJoin('staff as st', 'st.id', 'n.staffId')
       .innerJoin('organizations as o', 'o.id', 'n.organizationId')
       .where('n.organizationId', '=', orgId)
-      .where((eb) => eb.or([eb('n.branchId', 'is', null), eb('n.branchId', 'in', auth.branchIds.length ? auth.branchIds : ['00000000-0000-0000-0000-000000000000'])]));
+      .where(visibleMessages(auth));
     if (query.status.length) base = base.where('n.status', 'in', query.status);
     if (query.channel) base = base.where('n.channel', '=', query.channel);
     if (query.eventType) base = base.where('n.eventType', '=', query.eventType);
@@ -136,11 +146,13 @@ logs.get('/summary', { summary: 'Delivery counts for the last 7 days and connect
   tx(async (t) => {
     const orgId = requireOrgId(auth);
     const rows = await t
-      .selectFrom('notifications')
-      .select(['status', (eb) => eb.fn.countAll<number>().as('n')])
-      .where('organizationId', '=', orgId)
-      .where('createdAt', '>', sql<Date>`now() - interval '7 days'`)
-      .groupBy('status')
+      .selectFrom('notifications as n')
+      .leftJoin('customers as c', 'c.id', 'n.customerId')
+      .select(['n.status', (eb) => eb.fn.countAll<number>().as('n')])
+      .where('n.organizationId', '=', orgId)
+      .where(visibleMessages(auth))
+      .where('n.createdAt', '>', sql<Date>`now() - interval '7 days'`)
+      .groupBy('n.status')
       .execute();
     const channels = await availableChannels(t, orgId);
     return { last7Days: Object.fromEntries(rows.map((r) => [r.status, Number(r.n)])), connectedChannels: [...channels], mode: env.NOTIFICATIONS_MODE };
