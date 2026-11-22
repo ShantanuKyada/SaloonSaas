@@ -87,8 +87,10 @@ export interface RoleTemplate {
   permissions: Permission[];
 }
 
+// Front desk: bookings, walk-ins, customers, bills, payments and dues. Their home is the Front desk, which has the
+// live status they need; the branch's business story (revenue trends, team revenue) and attendance records are the
+// manager's.
 const RECEPTIONIST: Permission[] = [
-  'dashboard.branch',
   'appointments.view',
   'appointments.create',
   'appointments.update',
@@ -101,7 +103,6 @@ const RECEPTIONIST: Permission[] = [
   'customers.update',
   'services.view',
   'staff.view',
-  'attendance.view',
   'billing.view',
   'billing.create',
   'payments.collect',
@@ -111,6 +112,8 @@ const RECEPTIONIST: Permission[] = [
 
 const BRANCH_MANAGER: Permission[] = [
   ...RECEPTIONIST,
+  'dashboard.branch',
+  'attendance.view',
   'appointments.override_hours',
   'customers.archive',
   'customers.export',

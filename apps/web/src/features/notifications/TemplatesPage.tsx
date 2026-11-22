@@ -11,6 +11,7 @@ import { api, ApiError } from '@/lib/api';
 import { useCan } from '@/lib/auth';
 import { friendlyError } from '@/lib/errors';
 import { useDebounced } from '@/lib/hooks';
+import { cn } from '@/lib/utils';
 
 interface Template { id: string; eventType: string; eventLabel: string; channel: NotificationChannel; name: string; subject: string | null; body: string; isActive: boolean; providerTemplateName: string | null; variables: string[] }
 interface Preview { body: string; subject: string | null; unknownPlaceholders: string[] }
@@ -34,6 +35,13 @@ export function Component() {
       <PageHeader title="Message templates" description="The wording of confirmations, reminders and receipts. Use the placeholders to add each customer’s details." />
       {q.isLoading && <div role="status" aria-label="Loading templates" className="space-y-3"><Skeleton className="h-28" /><Skeleton className="h-28" /></div>}
       {q.isError && <ErrorState error={q.error} onRetry={() => void q.refetch()} />}
+      {!manage && (
+        <div className="mb-4">
+          <InlineNotice tone="info" title="You can read these, but not change them">
+            Templates are shared by every branch, so changing them needs the “Edit message templates” permission, which only the owner has by default. Ask the owner to change a text, or to give your role this permission in Users and roles.
+          </InlineNotice>
+        </div>
+      )}
       {q.data?.length === 0 && <Card><EmptyState title="No templates" description="Templates are created automatically when the salon is set up." /></Card>}
       <div className="space-y-4">
         {groups.map(([label, items]) => (
@@ -44,7 +52,7 @@ export function Component() {
                 <li key={t.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
                   <div className="min-w-0 flex-1 basis-64">
                     <div className="mb-1 flex items-center gap-2"><Badge tone="primary">{NOTIFICATION_CHANNEL_LABELS[t.channel]}</Badge>{!t.isActive && <Badge>Switched off</Badge>}</div>
-                    <p className="line-clamp-2 whitespace-pre-wrap text-sm text-muted">{t.body}</p>
+                    <p className={cn('whitespace-pre-wrap text-sm text-muted', manage && 'line-clamp-2')}>{t.body}</p>
                   </div>
                   {manage && <Button size="sm" variant="outline" icon={<Pencil className="size-4" />} onClick={() => setEditing(t)}>Edit</Button>}
                 </li>

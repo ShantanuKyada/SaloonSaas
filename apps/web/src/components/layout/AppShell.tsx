@@ -67,13 +67,25 @@ function BranchSelector() {
 }
 
 function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-  const rows: Array<[string, string]> = [['N', 'New appointment'], ['W', 'Walk-in'], ['C', 'Find a customer'], ['B', 'Create bill'], ['P', 'Collect payment'], ['/', 'Search anything'], ['Esc', 'Close this panel']];
+  const can = useCan();
+  // Only the keys that work for this person (the same checks as the key handler below).
+  const rows = ([
+    ['N', 'New appointment', can('appointments.create')],
+    ['W', 'Walk-in', can('walkins.manage')],
+    ['C', 'Find a customer', can('customers.view')],
+    ['B', 'Create bill', can('billing.create')],
+    ['P', 'Collect payment', can('payments.collect')],
+    ['/', 'Search anything', true],
+    ['?', 'Show these shortcuts', true],
+    ['Esc', 'Close a panel or window', true],
+  ] as Array<[string, string, boolean]>).filter(([, , ok]) => ok);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/45" />
         <Dialog.Content aria-describedby={undefined} className="fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-2xl bg-surface p-5 shadow-pop outline-none">
           <Dialog.Title className="mb-3 text-lg font-semibold">Keyboard shortcuts</Dialog.Title>
+          <p className="mb-3 text-sm text-muted">They work anywhere in the app, except while you are typing in a box or a window is open.</p>
           <dl className="space-y-2">
             {rows.map(([k, label]) => (
               <div key={k} className="flex items-center justify-between text-sm">

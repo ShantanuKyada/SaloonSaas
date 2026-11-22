@@ -13,7 +13,7 @@ import {
 import { sql } from 'kysely';
 import { z } from 'zod';
 import { audit } from '../../core/audit.js';
-import { assertBranchAccess, hasPermission, nonEmpty, requireOrgId } from '../../core/auth-context.js';
+import { assertBranchAccess, hasPermission, nonEmpty, requireOrgId, type AuthContext } from '../../core/auth-context.js';
 import type { Tx } from '../../db/tenant.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { createRouter, FileResponse, paged } from '../../core/router.js';
@@ -21,7 +21,11 @@ import { loadOrg, loadSettings, optionalPhone } from '../../core/validation.js';
 import {
   canSeeContact,
   createCustomerRecord,
+  customerInBranches,
+  customerMetrics,
+  customerScope,
   customerSearchCondition,
+  customerStatsInBranches,
   loadCustomerDetail,
   maskContact,
   savePreferences,
@@ -101,38 +105,38 @@ r.get(
     }),
 );
 
-function listBase(t: Tx, orgId: string, query: z.output<typeof customerListQuery>) {
+/** The customer list: limited to the customers of the login's branches (or the branch asked for), with numbers counted there. */
+function listBase(t: Tx, auth: AuthContext, orgId: string, query: z.output<typeof customerListQuery>) {
+  const scope = customerScope(auth, query.branchId);
+  const m = customerMetrics(scope);
   let q = t
     .selectFrom('customers as c')
     .leftJoin('customerStats as cs', 'cs.customerId', 'c.id')
     .leftJoin('customerAccounts as ca', 'ca.customerId', 'c.id')
     .where('c.organizationId', '=', orgId);
+  if (scope) q = q.where(customerInBranches(scope));
   if (query.status !== 'all') q = q.where('c.status', '=', query.status);
   else q = q.where('c.status', '!=', 'archived');
   if (query.search) q = q.where(customerSearchCondition(query.search));
   if (query.tag) q = q.where(sql<boolean>`${query.tag} = any(c.tags)`);
-  if (query.hasOutstanding) q = q.where(sql<boolean>`coalesce(ca.balance, 0) > 0`);
-  if (query.branchId) {
-    const branchId = query.branchId;
-    q = q.where(sql<boolean>`coalesce(cs.last_branch_id, c.preferred_branch_id, c.registered_branch_id) = ${branchId}`);
-  }
-  return q;
+  if (query.hasOutstanding) q = q.where(sql<boolean>`${m.outstanding} > 0`);
+  return { q, m };
 }
-const SORTS: Record<string, string> = {
-  name: 'c.full_name',
-  lastVisit: 'cs.last_visit_at',
-  spend: 'cs.lifetime_spend',
-  outstanding: 'ca.balance',
-  registered: 'c.registered_at',
-};
+const SORTS = {
+  name: () => sql`c.full_name`,
+  lastVisit: (m: ReturnType<typeof customerMetrics>) => m.lastVisit,
+  spend: (m: ReturnType<typeof customerMetrics>) => m.spend,
+  outstanding: (m: ReturnType<typeof customerMetrics>) => m.outstanding,
+  registered: () => sql`c.registered_at`,
+} as const;
 
 r.get('/', { summary: 'Customer list (server-side pagination)', permissions: ['customers.view'], query: customerListQuery }, async ({ tx, auth, query }) =>
   tx(async (t) => {
     const orgId = requireOrgId(auth);
     const settings = await loadSettings(t, orgId);
-    const base = listBase(t, orgId, query);
+    const { q: base, m } = listBase(t, auth, orgId, query);
     const { n } = await base.select((eb) => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
-    const sortCol = SORTS[query.sortBy ?? 'registered'] ?? SORTS.registered!;
+    const sortCol = (SORTS[(query.sortBy ?? 'registered') as keyof typeof SORTS] ?? SORTS.registered)(m);
     const dir = query.sortDir === 'asc' ? sql`asc nulls last` : sql`desc nulls last`;
     const rows = await base
       .select([
@@ -146,12 +150,12 @@ r.get('/', { summary: 'Customer list (server-side pagination)', permissions: ['c
         'c.tags',
         'c.registeredAt',
         'c.marketingConsent',
-        'cs.lastVisitAt',
-        sql<number>`coalesce(cs.visit_count, 0)`.as('visitCount'),
-        sql<number>`coalesce(cs.lifetime_spend, 0)`.as('lifetimeSpend'),
-        sql<number>`greatest(coalesce(ca.balance, 0), 0)`.as('outstanding'),
+        m.lastVisit.as('lastVisitAt'),
+        m.visits.as('visitCount'),
+        m.spend.as('lifetimeSpend'),
+        m.outstanding.as('outstanding'),
       ])
-      .orderBy(sql`${sql.raw(sortCol)} ${dir}`)
+      .orderBy(sql`${sortCol} ${dir}`)
       .orderBy('c.id')
       .limit(query.pageSize)
       .offset((query.page - 1) * query.pageSize)
@@ -169,7 +173,7 @@ r.get('/', { summary: 'Customer list (server-side pagination)', permissions: ['c
           status: c.status,
           tags: c.tags,
           registeredAt: c.registeredAt.toISOString(),
-          lastVisitAt: c.lastVisitAt?.toISOString() ?? null,
+          lastVisitAt: c.lastVisitAt ? new Date(c.lastVisitAt).toISOString() : null,
           visitCount: Number(c.visitCount),
           lifetimeSpend: Number(c.lifetimeSpend),
           outstanding: Number(c.outstanding),
@@ -185,8 +189,9 @@ r.get('/', { summary: 'Customer list (server-side pagination)', permissions: ['c
 r.get('/export', { summary: 'Export customers as CSV', permissions: ['customers.export'], query: customerListQuery }, async ({ tx, auth, query }) =>
   tx(async (t) => {
     const orgId = requireOrgId(auth);
-    const rows = await listBase(t, orgId, query)
-      .select(['c.customerCode', 'c.fullName', 'c.mobile', 'c.email', 'c.gender', 'c.city', 'c.registeredAt', 'c.marketingConsent', 'cs.lastVisitAt', sql<number>`coalesce(cs.visit_count, 0)`.as('visits'), sql<number>`coalesce(cs.lifetime_spend, 0) / 100.0`.as('spend'), sql<number>`greatest(coalesce(ca.balance, 0), 0) / 100.0`.as('outstanding')])
+    const { q: base, m } = listBase(t, auth, orgId, query);
+    const rows = await base
+      .select(['c.customerCode', 'c.fullName', 'c.mobile', 'c.email', 'c.gender', 'c.city', 'c.registeredAt', 'c.marketingConsent', m.lastVisit.as('lastVisitAt'), m.visits.as('visits'), sql<number>`${m.spend} / 100.0`.as('spend'), sql<number>`${m.outstanding} / 100.0`.as('outstanding')])
       .orderBy('c.fullName')
       .limit(50000)
       .execute();
@@ -196,7 +201,7 @@ r.get('/export', { summary: 'Export customers as CSV', permissions: ['customers.
       'text/csv; charset=utf-8',
       toCsv(
         ['Customer code', 'Name', 'Mobile', 'Email', 'Gender', 'City', 'Registered', 'Marketing consent', 'Last visit', 'Visits', 'Lifetime spend', 'Pending payment'],
-        rows.map((c) => [c.customerCode, c.fullName, c.mobile, c.email, c.gender, c.city, c.registeredAt.toISOString().slice(0, 10), c.marketingConsent ? 'Yes' : 'No', c.lastVisitAt?.toISOString().slice(0, 10) ?? '', c.visits, c.spend, c.outstanding]),
+        rows.map((c) => [c.customerCode, c.fullName, c.mobile, c.email, c.gender, c.city, c.registeredAt.toISOString().slice(0, 10), c.marketingConsent ? 'Yes' : 'No', c.lastVisitAt ? new Date(c.lastVisitAt).toISOString().slice(0, 10) : '', c.visits, c.spend, c.outstanding]),
       ),
     );
   }),
@@ -219,13 +224,17 @@ r.get('/:id/360', { summary: 'Customer 360° view: history, spend, pending payme
     const branches = nonEmpty(auth.branchIds);
     const seeMoney = hasPermission(auth, 'ledger.view') || hasPermission(auth, 'billing.view');
 
-    const stats = await t
-      .selectFrom('customerStats as cs')
-      .leftJoin('services as fs', 'fs.id', 'cs.favoriteServiceId')
-      .leftJoin('staff as fst', 'fst.id', 'cs.favoriteStaffId')
-      .select(['cs.visitCount', 'cs.lifetimeSpend', 'cs.firstVisitAt', 'cs.lastVisitAt', 'cs.cancelledCount', 'cs.noShowCount', 'cs.favoriteServiceId', 'fs.name as favoriteServiceName', 'cs.favoriteStaffId', 'fst.displayName as favoriteStaffName'])
-      .where('cs.customerId', '=', id)
-      .executeTakeFirst();
+    // People limited to some branches see this customer's visits, spend and favourites there only.
+    const scope = customerScope(auth);
+    const stats = scope
+      ? await customerStatsInBranches(t, orgId, id, scope)
+      : await t
+          .selectFrom('customerStats as cs')
+          .leftJoin('services as fs', 'fs.id', 'cs.favoriteServiceId')
+          .leftJoin('staff as fst', 'fst.id', 'cs.favoriteStaffId')
+          .select(['cs.visitCount', 'cs.lifetimeSpend', 'cs.firstVisitAt', 'cs.lastVisitAt', 'cs.cancelledCount', 'cs.noShowCount', 'cs.favoriteServiceId', 'fs.name as favoriteServiceName', 'cs.favoriteStaffId', 'fst.displayName as favoriteStaffName'])
+          .where('cs.customerId', '=', id)
+          .executeTakeFirst();
 
     const apptSummary = (statusFilter: 'upcoming' | 'recent') => {
       let q = t
@@ -414,6 +423,8 @@ r.get('/:id/360', { summary: 'Customer 360° view: history, spend, pending payme
         .select(['id', 'createdAt', 'eventType', 'category', 'channel', 'recipient', 'status', 'statusReason', 'attempts', 'scheduledFor', 'sentAt', 'deliveredAt', 'readAt', 'lastError', 'body'])
         .where('organizationId', '=', orgId)
         .where('customerId', '=', id)
+        // Messages about another branch's bookings stay with that branch; salon-wide ones (offers, birthdays) show to all.
+        .$if(!!scope, (qb) => qb.where((eb) => eb.or([eb('branchId', 'is', null), eb('branchId', 'in', scope!)])))
         .orderBy('createdAt', 'desc')
         .limit(15)
         .execute()
@@ -443,6 +454,7 @@ r.get('/:id/360', { summary: 'Customer 360° view: history, spend, pending payme
              extract(hour from a.start_at at time zone ${org.timezone})::int as hour, count(*)::int as n
         from appointments a
        where a.organization_id = ${orgId} and a.customer_id = ${id} and a.status in ('completed','scheduled','confirmed') and a.start_at is not null
+         and (${!scope} or a.branch_id = any(${scope ?? []}::uuid[]))
        group by 1, 2 order by n desc, max(a.start_at) desc limit 1`.execute(t);
     const visits = stats?.visitCount ?? 0;
     const spend = stats?.lifetimeSpend ?? 0;
@@ -563,13 +575,35 @@ r.put('/:id/preferences', { summary: 'Update communication preferences and conse
   }),
 );
 
+/** Archiving hides a customer from every branch, so a branch login may only do it for its own branches' customers. */
+async function assertCustomerOfMyBranches(t: Tx, auth: AuthContext, orgId: string, id: string): Promise<void> {
+  const scope = customerScope(auth);
+  const row = await t.selectFrom('customers as c').select('c.id').where('c.organizationId', '=', orgId).where('c.id', '=', id).$if(!!scope, (qb) => qb.where(customerInBranches(scope!))).executeTakeFirst();
+  if (row) return;
+  const exists = await t.selectFrom('customers').select('id').where('organizationId', '=', orgId).where('id', '=', id).executeTakeFirst();
+  if (!exists) throw notFound('Customer');
+  throw new AppError(403, 'BRANCH_ACCESS_DENIED', 'This customer belongs to another branch. Ask that branch or the owner to archive them.');
+}
+
 r.delete('/:id', { summary: 'Archive a customer (history is kept)', permissions: ['customers.archive'], status: 204 }, async ({ tx, auth, params }) =>
   tx(async (t) => {
     const orgId = requireOrgId(auth);
+    await assertCustomerOfMyBranches(t, auth, orgId, params.id!);
     const row = await t.updateTable('customers').set({ status: 'archived' }).where('organizationId', '=', orgId).where('id', '=', params.id!).returning(['id', 'fullName']).executeTakeFirst();
     if (!row) throw notFound('Customer');
     await audit(t, auth, { action: 'customer.archived', entityType: 'customer', entityId: row.id, summary: `Customer ${row.fullName} archived` });
     return undefined;
+  }),
+);
+
+r.post('/:id/restore', { summary: 'Bring an archived customer back', permissions: ['customers.archive'], status: 200 }, async ({ tx, auth, params }) =>
+  tx(async (t) => {
+    const orgId = requireOrgId(auth);
+    await assertCustomerOfMyBranches(t, auth, orgId, params.id!);
+    const row = await t.updateTable('customers').set({ status: 'active' }).where('organizationId', '=', orgId).where('id', '=', params.id!).where('status', '=', 'archived').returning(['id', 'fullName']).executeTakeFirst();
+    if (!row) throw new AppError(409, 'CONFLICT', 'This customer is not archived.');
+    await audit(t, auth, { action: 'customer.restored', entityType: 'customer', entityId: row.id, summary: `Customer ${row.fullName} brought back from the archive` });
+    return { id: row.id };
   }),
 );
 
@@ -583,7 +617,7 @@ segments.get('/', { summary: 'Saved customer segments with live counts', permiss
     const out = [];
     for (const s of rows) {
       const filter = segmentFilterSchema.parse(s.filter);
-      const { n } = await segmentQuery(t, orgId, filter).select((eb) => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
+      const { n } = await segmentQuery(t, orgId, filter, customerScope(auth)).select((eb) => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
       out.push({ id: s.id, name: s.name, description: s.description, filter, customerCount: n });
     }
     return out;
@@ -594,8 +628,9 @@ segments.post('/preview', { summary: 'Count and sample customers for a filter', 
   tx(async (t) => {
     const orgId = requireOrgId(auth);
     const settings = await loadSettings(t, orgId);
-    const { n } = await segmentQuery(t, orgId, body).select((eb) => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
-    const sample = await segmentQuery(t, orgId, body)
+    const scope = customerScope(auth);
+    const { n } = await segmentQuery(t, orgId, body, scope).select((eb) => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
+    const sample = await segmentQuery(t, orgId, body, scope)
       .select(['c.id', 'c.fullName', 'c.mobile', 'c.customerCode', 'cs.lastVisitAt', sql<number>`coalesce(cs.lifetime_spend, 0)`.as('lifetimeSpend'), sql<number>`coalesce(cs.visit_count, 0)`.as('visitCount')])
       .orderBy('cs.lastVisitAt', (o) => o.desc().nullsLast())
       .limit(10)

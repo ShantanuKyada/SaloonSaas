@@ -6,6 +6,7 @@ import { branchFilter, hasPermission, requireOrgId } from '../../core/auth-conte
 import { createRouter } from '../../core/router.js';
 import { loadSettings } from '../../core/validation.js';
 import { loadServiceDemand, loadStaffMetrics } from './metrics.js';
+import { customerFavourite, customerInBranches, customerMetrics, customerScope } from '../customers/service.js';
 
 const r = createRouter('/analytics', 'Analytics');
 
@@ -47,6 +48,14 @@ r.get('/customers', { summary: 'Retention: lifetime value, visit frequency, repe
     const branches = branchFilter(auth, query.branchId);
     const b = sql.join(branches.map((x) => sql`${x}::uuid`));
 
+    // Customers of the branch asked for, or of the login's own branches, with their numbers counted there.
+    const scope = customerScope(auth, query.branchId);
+    const m = customerMetrics(scope);
+    const per = sql`(select c.id, c.full_name, ${m.visits} as visit_count, ${m.spend} as lifetime_spend, ${m.firstVisit} as first_visit_at, ${m.lastVisit} as last_visit_at,
+                            ${customerFavourite('service', scope)} as favorite_service, ${customerFavourite('staff', scope)} as favorite_staff
+                       from customers c left join customer_stats cs on cs.customer_id = c.id
+                      where c.organization_id = ${orgId} and c.status = 'active' and ${scope ? customerInBranches(scope) : sql`true`})`;
+
     const summary = await sql<{ withVisit: number; repeat: number; avgInterval: number | null; avgLtv: number | null; inactive30: number; inactive60: number; inactive90: number }>`
       select count(*) filter (where cs.visit_count > 0)::int as "withVisit",
              count(*) filter (where cs.visit_count >= 2)::int as repeat,
@@ -55,9 +64,7 @@ r.get('/customers', { summary: 'Retention: lifetime value, visit frequency, repe
              count(*) filter (where cs.visit_count > 0 and cs.last_visit_at < now() - interval '30 days')::int as inactive30,
              count(*) filter (where cs.visit_count > 0 and cs.last_visit_at < now() - interval '60 days')::int as inactive60,
              count(*) filter (where cs.visit_count > 0 and cs.last_visit_at < now() - interval '90 days')::int as inactive90
-        from customer_stats cs join customers c on c.id = cs.customer_id
-       where cs.organization_id = ${orgId} and c.status = 'active'
-         and (cs.last_branch_id is null or cs.last_branch_id in (${b}))`.execute(t);
+        from ${per} cs`.execute(t);
     const s = summary.rows[0]!;
 
     const retention = await sql<{ earlier: number; kept: number }>`
@@ -71,28 +78,21 @@ r.get('/customers', { summary: 'Retention: lifetime value, visit frequency, repe
        where organization_id = ${orgId} and status = 'issued' and branch_id in (${b}) and invoice_date >= current_date - 90`.execute(t);
 
     const atRisk = await sql<{ id: string; fullName: string; visits: number; ltv: number; lastVisitAt: Date; daysSince: number; usualGapDays: number }>`
-      select c.id, c.full_name as "fullName", cs.visit_count as visits, cs.lifetime_spend as ltv, cs.last_visit_at as "lastVisitAt",
+      select cs.id, cs.full_name as "fullName", cs.visit_count as visits, cs.lifetime_spend as ltv, cs.last_visit_at as "lastVisitAt",
              extract(day from now() - cs.last_visit_at)::int as "daysSince",
              round((extract(epoch from (cs.last_visit_at - cs.first_visit_at)) / 86400 / (cs.visit_count - 1))::numeric)::int as "usualGapDays"
-        from customer_stats cs join customers c on c.id = cs.customer_id
-       where cs.organization_id = ${orgId} and c.status = 'active' and cs.visit_count >= 2
+        from ${per} cs
+       where cs.visit_count >= 2
          and cs.last_visit_at > now() - interval '365 days'
-         and (cs.last_branch_id is null or cs.last_branch_id in (${b}))
          and extract(epoch from now() - cs.last_visit_at) / 86400 > 1.5 * (extract(epoch from (cs.last_visit_at - cs.first_visit_at)) / 86400 / (cs.visit_count - 1))
        order by cs.lifetime_spend desc limit 20`.execute(t);
 
-    const top = await t
-      .selectFrom('customerStats as cs')
-      .innerJoin('customers as c', 'c.id', 'cs.customerId')
-      .leftJoin('services as fs', 'fs.id', 'cs.favoriteServiceId')
-      .leftJoin('staff as fst', 'fst.id', 'cs.favoriteStaffId')
-      .select(['c.id', 'c.fullName', 'cs.visitCount', 'cs.lifetimeSpend', 'cs.lastVisitAt', 'fs.name as favoriteService', 'fst.displayName as favoriteStaff'])
-      .where('cs.organizationId', '=', orgId)
-      .where('c.status', '=', 'active')
-      .where('cs.lifetimeSpend', '>', 0)
-      .orderBy('cs.lifetimeSpend', 'desc')
-      .limit(10)
-      .execute();
+    const top = (
+      await sql<{ id: string; fullName: string; visitCount: number; lifetimeSpend: number; lastVisitAt: Date | null; favoriteService: string | null; favoriteStaff: string | null }>`
+        select cs.id, cs.full_name as "fullName", cs.visit_count as "visitCount", cs.lifetime_spend as "lifetimeSpend", cs.last_visit_at as "lastVisitAt",
+               cs.favorite_service as "favoriteService", cs.favorite_staff as "favoriteStaff"
+          from ${per} cs where cs.lifetime_spend > 0 order by cs.lifetime_spend desc limit 10`.execute(t)
+    ).rows.map((c) => ({ ...c, visitCount: Number(c.visitCount), lifetimeSpend: Number(c.lifetimeSpend), lastVisitAt: c.lastVisitAt ? new Date(c.lastVisitAt) : null }));
 
     const earlier = Number(ret.earlier);
     return {
@@ -105,7 +105,7 @@ r.get('/customers', { summary: 'Retention: lifetime value, visit frequency, repe
       retentionPercent: earlier ? Math.round((Number(ret.kept) / earlier) * 100) : null,
       churnPercent: earlier ? Math.round(((earlier - Number(ret.kept)) / earlier) * 100) : null,
       inactive: { days30: Number(s.inactive30), days60: Number(s.inactive60), days90: Number(s.inactive90) },
-      atRisk: atRisk.rows.map((x) => ({ ...x, lastVisitAt: new Date(x.lastVisitAt).toISOString() })),
+      atRisk: atRisk.rows.map((x) => ({ ...x, visits: Number(x.visits), ltv: Number(x.ltv), lastVisitAt: new Date(x.lastVisitAt).toISOString() })),
       topCustomers: top.map((c) => ({ id: c.id, fullName: c.fullName, lifetimeSpend: c.lifetimeSpend, visits: c.visitCount, averageVisit: c.visitCount ? Math.round(c.lifetimeSpend / c.visitCount) : 0, daysSinceLastVisit: c.lastVisitAt ? Math.floor((Date.now() - c.lastVisitAt.getTime()) / 86400_000) : null, favoriteService: c.favoriteService, favoriteStaff: c.favoriteStaff })),
       definitions: {
         retention: 'Of customers who visited 91–180 days ago, the share who also visited in the last 90 days.',

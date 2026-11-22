@@ -75,7 +75,7 @@ export function Component() {
       <Card padded={false}>
         <div className="flex flex-wrap items-center gap-3 border-b border-line p-4">
           <SearchInput className="min-w-60 flex-1" value={text} onChange={(v) => { setText(v); set({ search: v.trim() || null }); }} placeholder="Search by name, mobile number or customer code" autoFocus />
-          <Segmented label="Show" value={status} onChange={(v) => set({ status: v === 'active' ? null : v })} options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }, { value: 'all', label: 'All' }]} />
+          <Segmented label="Show" value={status} onChange={(v) => set({ status: v === 'active' ? null : v })} options={[{ value: 'active', label: 'Active' }, { value: 'inactive', label: 'Inactive' }, ...(can('customers.archive') ? [{ value: 'archived' as const, label: 'Archived' }] : []), { value: 'all', label: 'All' }]} />
           <Checkbox checked={owing} onCheckedChange={(v) => set({ owing: v ? '1' : null })} label="Has pending payment" />
         </div>
         <DataTable

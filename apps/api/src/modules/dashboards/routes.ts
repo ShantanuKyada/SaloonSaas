@@ -12,7 +12,8 @@ import { branchDashboard, ownerDashboard } from './service.js';
 
 const r = createRouter('/dashboard', 'Dashboards');
 
-r.get('/owner', { summary: 'Owner dashboard: revenue, appointments, customers, staff, pending payments, branches and alerts', permissions: ['dashboard.business'], query: dashboardQuery }, async ({ tx, auth, query }) =>
+// Owners see the whole salon; branch managers the same story for their branches (branchFilter limits every figure).
+r.get('/owner', { summary: 'Business dashboard: revenue, appointments, customers, staff, pending payments, branches and alerts', permissions: ['dashboard.business', 'dashboard.branch'], query: dashboardQuery }, async ({ tx, auth, query }) =>
   tx((t) => ownerDashboard(t, auth, requireOrgId(auth), query)),
 );
 

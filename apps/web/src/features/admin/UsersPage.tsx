@@ -22,7 +22,7 @@ interface UserRow { id: string; fullName: string; email: string | null; phone: s
 interface RoleRow { id: string; key: string; name: string; description: string | null; homeScreen: HomeScreen; isSystem: boolean; isLocked: boolean; userCount: number; permissions: string[] }
 interface PermissionGroup { module: string; permissions: Array<{ key: string; label: string }> }
 
-const HOME_LABEL: Record<HomeScreen, string> = { owner_dashboard: 'Business dashboard', branch_dashboard: 'Today at the salon', front_desk: 'Front desk', my_day: 'My day (phone view)' };
+const HOME_LABEL: Record<HomeScreen, string> = { owner_dashboard: 'Business dashboard', branch_dashboard: 'Branch dashboard', front_desk: 'Front desk', my_day: 'My day (phone view)' };
 
 export function Component() {
   const can = useCan();

@@ -7,7 +7,7 @@ import {
 } from '@salon/shared';
 import { sql, type RawBuilder } from 'kysely';
 import { audit } from '../../core/audit.js';
-import { hasPermission, type AuthContext } from '../../core/auth-context.js';
+import { branchFilter, hasPermission, type AuthContext } from '../../core/auth-context.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { nextCustomerCode } from '../../core/sequences.js';
 import { optionalPhone, type OrgContext, type OrgSettings } from '../../core/validation.js';
@@ -52,6 +52,105 @@ export function customerSearchCondition(term: string, alias = 'c'): RawBuilder<b
   return digits
     ? sql<boolean>`(${name} ilike ${like} or ${code} ilike ${like} or ${email} ilike ${like} or ${mobile} like ${`%${digits}%`})`
     : sql<boolean>`(${name} ilike ${like} or ${code} ilike ${like} or ${email} ilike ${like})`;
+}
+
+// ───────────── Customers seen through some branches ─────────────
+// A login limited to some branches sees the customers connected to them (registered or preferred there, or with a
+// booking or bill there), with visits, spend and pending payments counted in those branches only. Finding someone by
+// name or phone still searches the whole salon, so a customer of another branch can be booked here instead of being
+// added twice; their profile then shows only what happened here.
+
+/** The branches a customer screen is limited to: the one asked for, or the login's own; null = the whole salon. */
+export function customerScope(auth: AuthContext, requestedBranchId?: string | null): string[] | null {
+  if (requestedBranchId) return branchFilter(auth, requestedBranchId);
+  return auth.allBranches ? null : branchFilter(auth);
+}
+
+const inBranches = (column: RawBuilder<unknown> | ReturnType<typeof sql.ref>, branches: readonly string[]) => sql<boolean>`${column} = any(${[...branches]}::uuid[])`;
+
+/** Is the customer connected to one of these branches? */
+export function customerInBranches(branches: readonly string[], alias = 'c'): RawBuilder<boolean> {
+  const id = sql.ref(`${alias}.id`);
+  return sql<boolean>`(${inBranches(sql.ref(`${alias}.registered_branch_id`), branches)} or ${inBranches(sql.ref(`${alias}.preferred_branch_id`), branches)}
+    or exists (select 1 from appointments xa where xa.customer_id = ${id} and ${inBranches(sql.ref('xa.branch_id'), branches)})
+    or exists (select 1 from invoices xi where xi.customer_id = ${id} and ${inBranches(sql.ref('xi.branch_id'), branches)}))`;
+}
+
+export interface CustomerMetrics {
+  visits: RawBuilder<number>;
+  spend: RawBuilder<number>;
+  firstVisit: RawBuilder<Date | null>;
+  lastVisit: RawBuilder<Date | null>;
+  outstanding: RawBuilder<number>;
+}
+
+/**
+ * Visits, spend, last visit and pending payment for list screens. The whole salon: the cached totals (the query must
+ * join customer_stats as cs and customer_accounts as ca). Some branches: counted from their bookings and bills, by the
+ * same rules as refreshCustomerStats.
+ */
+export function customerMetrics(branches: readonly string[] | null, alias = 'c'): CustomerMetrics {
+  if (!branches) {
+    return {
+      visits: sql<number>`coalesce(cs.visit_count, 0)`,
+      spend: sql<number>`coalesce(cs.lifetime_spend, 0)`,
+      firstVisit: sql<Date | null>`cs.first_visit_at`,
+      lastVisit: sql<Date | null>`cs.last_visit_at`,
+      outstanding: sql<number>`greatest(coalesce(ca.balance, 0), 0)`,
+    };
+  }
+  const id = sql.ref(`${alias}.id`);
+  const appts = (what: RawBuilder<unknown>) => sql`(select ${what} from appointments ma where ma.customer_id = ${id} and ma.status = 'completed' and ${inBranches(sql.ref('ma.branch_id'), branches)})`;
+  const bills = (what: RawBuilder<unknown>, extra: RawBuilder<unknown> = sql`true`) => sql`(select ${what} from invoices mi where mi.customer_id = ${id} and mi.status = 'issued' and ${inBranches(sql.ref('mi.branch_id'), branches)} and ${extra})`;
+  return {
+    visits: sql<number>`(${appts(sql`count(*)`)} + ${bills(sql`count(*)`, sql`mi.appointment_id is null`)})::int`,
+    spend: sql<number>`coalesce(${bills(sql`sum(mi.grand_total)`)}, 0)::bigint`,
+    firstVisit: sql<Date | null>`least(${appts(sql`min(coalesce(ma.completed_at, ma.start_at))`)}, ${bills(sql`min(mi.issued_at)`, sql`mi.appointment_id is null`)})`,
+    lastVisit: sql<Date | null>`greatest(${appts(sql`max(coalesce(ma.completed_at, ma.start_at))`)}, ${bills(sql`max(mi.issued_at)`, sql`mi.appointment_id is null`)})`,
+    outstanding: sql<number>`coalesce(${bills(sql`sum(mi.balance_due)`)}, 0)::bigint`,
+  };
+}
+
+/** A customer's most-booked service or team member: the cached one for the whole salon (needs cs), else counted in some branches. */
+export function customerFavourite(what: 'service' | 'staff', branches: readonly string[] | null, alias = 'c'): RawBuilder<string | null> {
+  const [table, col, name, cached] = what === 'service' ? ['services', 'service_id', 'name', 'favorite_service_id'] : ['staff', 'staff_id', 'display_name', 'favorite_staff_id'];
+  if (!branches) return sql<string | null>`(select x.${sql.raw(name)} from ${sql.raw(table)} x where x.id = cs.${sql.raw(cached)})`;
+  return sql<string | null>`(select x.${sql.raw(name)} from invoice_items ii join invoices i on i.id = ii.invoice_id join ${sql.raw(table)} x on x.id = ii.${sql.raw(col)}
+    where i.customer_id = ${sql.ref(`${alias}.id`)} and i.status = 'issued' and i.branch_id = any(${[...branches]}::uuid[])
+    group by x.id, x.${sql.raw(name)} order by count(*) desc, max(i.issued_at) desc limit 1)`;
+}
+
+/** A customer's profile numbers counted in some branches only (the profile's "visits, spend, favourites" block). */
+export async function customerStatsInBranches(tx: Tx, orgId: string, customerId: string, branches: readonly string[]) {
+  const b = [...branches];
+  const { rows } = await sql<{
+    visitCount: number; lifetimeSpend: number; firstVisitAt: Date | null; lastVisitAt: Date | null; cancelledCount: number; noShowCount: number;
+    favoriteServiceId: string | null; favoriteServiceName: string | null; favoriteStaffId: string | null; favoriteStaffName: string | null;
+  }>`
+    with visits as (
+      select coalesce(a.completed_at, a.start_at) as ts from appointments a
+       where a.organization_id = ${orgId} and a.customer_id = ${customerId} and a.status = 'completed' and a.branch_id = any(${b}::uuid[])
+      union all
+      select i.issued_at from invoices i
+       where i.organization_id = ${orgId} and i.customer_id = ${customerId} and i.status = 'issued' and i.appointment_id is null and i.branch_id = any(${b}::uuid[])
+    ),
+    lines as (
+      select ii.service_id, ii.staff_id, i.issued_at from invoice_items ii join invoices i on i.id = ii.invoice_id
+       where i.organization_id = ${orgId} and i.customer_id = ${customerId} and i.status = 'issued' and i.branch_id = any(${b}::uuid[])
+    ),
+    fav_service as (select service_id from lines where service_id is not null group by service_id order by count(*) desc, max(issued_at) desc limit 1),
+    fav_staff as (select staff_id from lines where staff_id is not null group by staff_id order by count(*) desc, max(issued_at) desc limit 1)
+    select (select count(*) from visits where ts is not null)::int as "visitCount",
+           (select coalesce(sum(grand_total), 0) from invoices where organization_id = ${orgId} and customer_id = ${customerId} and status = 'issued' and branch_id = any(${b}::uuid[]))::bigint as "lifetimeSpend",
+           (select min(ts) from visits) as "firstVisitAt", (select max(ts) from visits) as "lastVisitAt",
+           (select count(*) from appointments where organization_id = ${orgId} and customer_id = ${customerId} and status = 'cancelled' and branch_id = any(${b}::uuid[]))::int as "cancelledCount",
+           (select count(*) from appointments where organization_id = ${orgId} and customer_id = ${customerId} and status = 'no_show' and branch_id = any(${b}::uuid[]))::int as "noShowCount",
+           fs.id as "favoriteServiceId", fs.name as "favoriteServiceName", fst.id as "favoriteStaffId", fst.display_name as "favoriteStaffName"
+      from (select 1) one
+      left join services fs on fs.id = (select service_id from fav_service)
+      left join staff fst on fst.id = (select staff_id from fav_staff)`.execute(tx);
+  const r = rows[0]!;
+  return { ...r, visitCount: Number(r.visitCount), lifetimeSpend: Number(r.lifetimeSpend), cancelledCount: Number(r.cancelledCount), noShowCount: Number(r.noShowCount) };
 }
 
 export async function findCustomerByMobile(tx: Tx, orgId: string, mobile: string) {
@@ -243,13 +342,14 @@ export async function refreshCustomerStats(tx: Tx, orgId: string, customerId: st
 }
 
 /** Customers matching a saved/ad-hoc segment. Used by the Segments screen and campaigns. */
-export function segmentQuery(tx: Tx, orgId: string, filter: SegmentFilter) {
+export function segmentQuery(tx: Tx, orgId: string, filter: SegmentFilter, branches: readonly string[] | null = null) {
   let q = tx
     .selectFrom('customers as c')
     .leftJoin('customerStats as cs', 'cs.customerId', 'c.id')
     .leftJoin('customerAccounts as ca', 'ca.customerId', 'c.id')
     .where('c.organizationId', '=', orgId)
     .where('c.status', '=', 'active');
+  if (branches) q = q.where(customerInBranches(branches));
   if (filter.marketingConsentOnly) q = q.where('c.marketingConsent', '=', true);
   if (filter.branchId) {
     const branchId = filter.branchId;

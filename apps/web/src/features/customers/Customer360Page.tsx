@@ -1,6 +1,6 @@
 import { NOTIFICATION_CATEGORIES, NOTIFICATION_CATEGORY_LABELS, NOTIFICATION_CHANNELS, NOTIFICATION_CHANNEL_LABELS, PAYMENT_METHOD_LABELS, type Customer360, type NotificationCategory, type NotificationChannel } from '@salon/shared';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { CalendarPlus, Mail, MessageCircle, Pencil, Phone, Receipt, Wallet } from 'lucide-react';
+import { Archive, ArchiveRestore, CalendarPlus, Mail, MessageCircle, Pencil, Phone, Receipt, Wallet } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
@@ -10,12 +10,14 @@ import { useCustomer360 } from '@/components/common/CustomerPicker';
 import { Button } from '@/components/ui/button';
 import { Avatar, Badge, Card, CardHeader, EmptyState, ErrorState, InlineNotice, PageHeader, Skeleton, StatCard, TabPanel, Tabs } from '@/components/ui/display';
 import { Switch } from '@/components/ui/form';
+import { useConfirm } from '@/components/ui/overlay';
 import { DataTable } from '@/components/ui/table';
 import { api } from '@/lib/api';
 import { useCan } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { fmtDateTime, fmtDay, relativeDays } from '@/lib/format';
 import { useQuickActions } from '@/features/quick/QuickActions';
+import { qk } from '@/lib/queries';
 import CustomerFormModal from './CustomerFormModal';
 
 const WEEKDAYS = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -65,6 +67,7 @@ export function Component() {
             {can('billing.create') && <Button variant="outline" icon={<Receipt className="size-4" />} onClick={() => navigate(`/billing/new?customerId=${customer.id}`)}>Create bill</Button>}
             {can('payments.collect') && account.outstanding > 0 && <Button variant="outline" icon={<Wallet className="size-4" />} onClick={() => navigate(`/billing/collect?customerId=${customer.id}`)}>Collect payment</Button>}
             {can('customers.update') && <Button variant="ghost" icon={<Pencil className="size-4" />} onClick={() => setEditing(true)}>Edit</Button>}
+            {can('customers.archive') && <ArchiveButton id={customer.id} name={customer.fullName} archived={customer.status === 'archived'} />}
           </>
         }
       />
@@ -278,5 +281,31 @@ function Preferences({ customer360: c, editable }: { customer360: Customer360; e
       </div>
       <p className="mt-3 flex items-center gap-1.5 text-xs text-muted"><MessageCircle className="size-3.5" aria-hidden />Opt-outs are always respected, including for messages already waiting to be sent.</p>
     </Card>
+  );
+}
+
+/** Managers can archive a customer (hidden from lists and search; history kept) and bring them back. */
+function ArchiveButton({ id, name, archived }: { id: string; name: string; archived: boolean }) {
+  const confirm = useConfirm();
+  const client = useQueryClient();
+  const done = (message: string) => {
+    toast.success(message);
+    void client.invalidateQueries({ queryKey: qk.customer360(id) });
+    void client.invalidateQueries({ queryKey: ['customers'] });
+  };
+  const archive = useMutation({ mutationFn: () => api.delete(`/customers/${id}`), onSuccess: () => done(`${name} archived`), onError: (e) => toastError(e) });
+  const restore = useMutation({ mutationFn: () => api.post(`/customers/${id}/restore`), onSuccess: () => done(`${name} is back`), onError: (e) => toastError(e) });
+  if (archived) return <Button variant="outline" icon={<ArchiveRestore className="size-4" />} loading={restore.isPending} onClick={() => restore.mutate()}>Restore</Button>;
+  return (
+    <Button
+      variant="ghost"
+      icon={<Archive className="size-4" />}
+      loading={archive.isPending}
+      onClick={async () => {
+        if (await confirm({ title: `Archive ${name}?`, body: 'They will no longer show in customer lists, search or booking. Their visits, bills and payments are kept, and you can bring them back from Customers → Archived.', confirmLabel: 'Archive customer', cancelLabel: 'Keep customer', tone: 'danger' })) archive.mutate();
+      }}
+    >
+      Archive
+    </Button>
   );
 }

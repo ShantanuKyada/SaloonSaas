@@ -7,7 +7,7 @@ import type { Tx } from '../../db/tenant.js';
 import { loadAttendanceDays, recomputeBranch } from '../attendance/service.js';
 import { loadServiceDemand, loadStaffMetrics } from '../analytics/metrics.js';
 import { ledgerStatement, outstandingCustomers, outstandingInvoices, outstandingSummary } from '../collections/service.js';
-import { maskContact } from '../customers/service.js';
+import { customerFavourite, customerInBranches, customerMetrics, customerScope, maskContact } from '../customers/service.js';
 import { loadBranch } from '../../core/validation.js';
 
 export type ColumnType = 'text' | 'number' | 'money' | 'percent' | 'date' | 'datetime' | 'minutes';
@@ -256,6 +256,9 @@ export const REPORTS: ReportDefinition[] = [
     permissions: ['reports.operations'],
     run: async (c) => {
       let base = c.tx.selectFrom('customers as cu').leftJoin('branches as b', 'b.id', 'cu.registeredBranchId').where('cu.organizationId', '=', c.orgId).where('cu.status', '!=', 'archived');
+      // Joined at the branch asked for, or at the login's own branches.
+      const scope = customerScope(c.auth, c.q.branchId);
+      if (scope) base = base.where('cu.registeredBranchId', 'in', scope);
       for (const cond of localDateConditionsTz('cu.registered_at', c.org.timezone, c.q.from, c.q.to)) base = base.where(cond);
       const { total } = await base.select((eb) => eb.fn.countAll<number>().as('total')).executeTakeFirstOrThrow();
       const rows = await base.select(['cu.customerCode', 'cu.fullName', 'cu.mobile', 'cu.source', 'cu.registeredAt', 'b.name as branch']).orderBy('cu.registeredAt', 'desc').limit(c.limit).offset(c.offset).execute();
@@ -302,24 +305,28 @@ export const REPORTS: ReportDefinition[] = [
     description: 'Customers who have not visited for a while (choose how many days).',
     permissions: ['reports.operations'],
     run: async (c) => {
-      const base = c.tx
+      // Counted at the branch asked for, or at the login's own branches: "not seen here for 90 days".
+      const scope = customerScope(c.auth, c.q.branchId);
+      const m = customerMetrics(scope, 'cu');
+      let base = c.tx
         .selectFrom('customers as cu')
         .innerJoin('customerStats as cs', 'cs.customerId', 'cu.id')
         .leftJoin('customerAccounts as ca', 'ca.customerId', 'cu.id')
         .where('cu.organizationId', '=', c.orgId)
         .where('cu.status', '=', 'active')
-        .where('cs.visitCount', '>', 0)
-        .where(sql<boolean>`cs.last_visit_at < now() - make_interval(days => ${c.q.inactiveDays})`);
+        .where(sql<boolean>`${m.visits} > 0`)
+        .where(sql<boolean>`${m.lastVisit} < now() - make_interval(days => ${c.q.inactiveDays})`);
+      if (scope) base = base.where(customerInBranches(scope, 'cu'));
       const { total } = await base.select((eb) => eb.fn.countAll<number>().as('total')).executeTakeFirstOrThrow();
       const rows = await base
-        .select(['cu.customerCode', 'cu.fullName', 'cu.mobile', 'cu.marketingConsent', 'cs.lastVisitAt', 'cs.visitCount', 'cs.lifetimeSpend', sql<number>`greatest(coalesce(ca.balance, 0), 0)`.as('outstanding'), sql<number>`extract(day from now() - cs.last_visit_at)::int`.as('daysSince')])
-        .orderBy('cs.lifetimeSpend', 'desc')
+        .select(['cu.customerCode', 'cu.fullName', 'cu.mobile', 'cu.marketingConsent', m.lastVisit.as('lastVisitAt'), m.visits.as('visitCount'), m.spend.as('lifetimeSpend'), m.outstanding.as('outstanding'), sql<number>`extract(day from now() - ${m.lastVisit})::int`.as('daysSince')])
+        .orderBy(m.spend, 'desc')
         .limit(c.limit)
         .offset(c.offset)
         .execute();
       return {
         columns: [col('customerCode', 'Code'), col('fullName', 'Name'), col('mobile', 'Mobile'), col('lastVisitAt', 'Last visit', 'date'), col('daysSince', 'Days since', 'number'), col('visitCount', 'Visits', 'number'), col('lifetimeSpend', 'Lifetime spend', 'money'), col('outstanding', 'Pending payment', 'money'), col('marketingConsent', 'OK to send offers')],
-        rows: rows.map((r) => maskContact({ ...r, lastVisitAt: r.lastVisitAt?.toISOString().slice(0, 10) ?? null, daysSince: n(r.daysSince), outstanding: n(r.outstanding), marketingConsent: r.marketingConsent ? 'Yes' : 'No' }, c.contactVisible)),
+        rows: rows.map((r) => maskContact({ ...r, lastVisitAt: r.lastVisitAt ? new Date(r.lastVisitAt).toISOString().slice(0, 10) : null, daysSince: n(r.daysSince), visitCount: n(r.visitCount), lifetimeSpend: n(r.lifetimeSpend), outstanding: n(r.outstanding), marketingConsent: r.marketingConsent ? 'Yes' : 'No' }, c.contactVisible)),
         total: n(total),
         note: `No visit for at least ${c.q.inactiveDays} days.`,
       };
@@ -332,18 +339,24 @@ export const REPORTS: ReportDefinition[] = [
     description: 'Top customers by lifetime spend.',
     permissions: ['reports.operations', 'reports.financial'],
     run: async (c) => {
-      const rows = await c.tx
+      // Spend and favourites at the branch asked for, or at the login's own branches.
+      const scope = customerScope(c.auth, c.q.branchId);
+      const m = customerMetrics(scope, 'cu');
+      const favourite = (what: 'service' | 'staff') => customerFavourite(what, scope, 'cu');
+      let base = c.tx
         .selectFrom('customerStats as cs')
         .innerJoin('customers as cu', 'cu.id', 'cs.customerId')
-        .leftJoin('services as fs', 'fs.id', 'cs.favoriteServiceId')
-        .leftJoin('staff as fst', 'fst.id', 'cs.favoriteStaffId')
-        .select(['cu.customerCode', 'cu.fullName', 'cu.mobile', 'cs.visitCount', 'cs.lifetimeSpend', 'cs.lastVisitAt', 'fs.name as favoriteService', 'fst.displayName as favoriteStaff', sql<number>`extract(day from now() - cs.last_visit_at)::int`.as('daysSince')])
         .where('cs.organizationId', '=', c.orgId)
         .where('cu.status', '=', 'active')
-        .where('cs.lifetimeSpend', '>', 0)
-        .orderBy('cs.lifetimeSpend', 'desc')
-        .limit(Math.min(c.limit, 200))
-        .execute();
+        .where(sql<boolean>`${m.spend} > 0`);
+      if (scope) base = base.where(customerInBranches(scope, 'cu'));
+      const rows = (
+        await base
+          .select(['cu.customerCode', 'cu.fullName', 'cu.mobile', m.visits.as('visitCount'), m.spend.as('lifetimeSpend'), m.lastVisit.as('lastVisitAt'), favourite('service').as('favoriteService'), favourite('staff').as('favoriteStaff'), sql<number>`extract(day from now() - ${m.lastVisit})::int`.as('daysSince')])
+          .orderBy(m.spend, 'desc')
+          .limit(Math.min(c.limit, 200))
+          .execute()
+      ).map((r) => ({ ...r, visitCount: n(r.visitCount), lifetimeSpend: n(r.lifetimeSpend) }));
       return {
         columns: [col('customerCode', 'Code'), col('fullName', 'Name'), col('mobile', 'Mobile'), col('lifetimeSpend', 'Lifetime spend', 'money'), col('visitCount', 'Visits', 'number'), col('averageVisit', 'Average visit', 'money'), col('daysSince', 'Days since last visit', 'number'), col('favoriteService', 'Favourite service'), col('favoriteStaff', 'Favourite team member')],
         rows: rows.map((r) => maskContact({ ...r, averageVisit: r.visitCount ? Math.round(r.lifetimeSpend / r.visitCount) : 0, daysSince: r.lastVisitAt ? n(r.daysSince) : null }, c.contactVisible)),

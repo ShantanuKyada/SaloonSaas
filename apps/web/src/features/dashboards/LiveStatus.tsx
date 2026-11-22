@@ -30,7 +30,7 @@ export function Tile({ icon, label, value, tone = 'neutral', hint }: { icon: Rea
 /** "What's happening right now?" understood in seconds (requirement 86.10). */
 export function SalonNowTiles({ now }: { now: Pick<SalonNow, 'customersToday' | 'staffAvailable' | 'staffServing' | 'waitingCustomers' | 'upcomingAppointments' | 'staffAbsent' | 'staffOnLeave' | 'staffOnBreak' | 'completedToday'> }) {
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-2 gap-3 md:grid-cols-3 2xl:grid-cols-6">
       <Tile icon={<Users className="size-5" />} label="Customers today" value={now.customersToday} tone="primary" hint={`${now.completedToday} done`} />
       <Tile icon={<UserCheck className="size-5" />} label="Team free now" value={now.staffAvailable} tone="success" />
       <Tile icon={<Armchair className="size-5" />} label="With customers" value={now.staffServing} tone="primary" />
