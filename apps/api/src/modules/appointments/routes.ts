@@ -7,6 +7,8 @@ import {
   createWalkInSchema,
   moveAppointmentSchema,
   updateAppointmentSchema,
+  repeatAppointmentSchema,
+  cancelFollowingSchema,
   zDate,
   type AppointmentDto,
   type CalendarData,
@@ -14,7 +16,7 @@ import {
 } from '@salon/shared';
 import { z } from 'zod';
 import { audit } from '../../core/audit.js';
-import { assertBranchAccess, branchFilter, isOwnScopeOnly, nonEmpty, requireOrgId, type AuthContext } from '../../core/auth-context.js';
+import { assertBranchAccess, branchFilter, isOwnScopeOnly, nonEmpty, requireFeature, requireOrgId, type AuthContext } from '../../core/auth-context.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { createRouter, paged } from '../../core/router.js';
 import { eachDate, isoWeekday, localRangeToUtc, todayIn } from '../../core/time.js';
@@ -23,6 +25,7 @@ import type { Tx } from '../../db/tenant.js';
 import { phoneDigits } from '../customers/service.js';
 import { createCustomerLink } from '../customer-portal/links.js';
 import { loadAppointmentDtos, visibleToOwnScope } from './dto.js';
+import { cancelFollowing, repeatAppointment } from './series.js';
 import { assignWalkIn, changeStatus, createAppointment, createWalkIn, moveAppointment, updateAppointment } from './service.js';
 
 const r = createRouter('/appointments', 'Appointments');
@@ -198,6 +201,21 @@ r.post('/:id/customer-link', { summary: "Make a private link to this booking for
     const url = await createCustomerLink(t, requireOrgId(auth), dto.id, dto.customer.id);
     await audit(t, auth, { action: 'appointment.customer_link', entityType: 'appointment', entityId: dto.id, branchId: dto.branchId, summary: `Made a private booking link for ${dto.customer.fullName} (${dto.bookingNumber})` });
     return { url };
+  }),
+);
+
+r.post('/:id/repeat', { summary: 'Repeat a booking every few weeks (same services and time; same person when free)', permissions: ['appointments.create'], body: repeatAppointmentSchema, status: 200 }, async ({ tx, auth, params, body }) =>
+  tx(async (t) => {
+    requireFeature(auth, 'recurring', 'Repeating appointments');
+    await oneDto(t, auth, params.id!);
+    return repeatAppointment(t, auth, requireOrgId(auth), params.id!, { ...body, via: 'desk' });
+  }),
+);
+
+r.post('/:id/cancel-following', { summary: 'Cancel this visit and the later ones of its series', permissions: ['appointments.cancel'], body: cancelFollowingSchema, status: 200 }, async ({ tx, auth, params, body }) =>
+  tx(async (t) => {
+    await oneDto(t, auth, params.id!);
+    return { cancelled: await cancelFollowing(t, auth, requireOrgId(auth), params.id!, body.reason || 'Repeating visits stopped', body.notifyCustomer) };
   }),
 );
 

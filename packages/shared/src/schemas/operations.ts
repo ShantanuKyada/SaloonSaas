@@ -265,4 +265,16 @@ export const rebookSchema = z.object({
   notes: optionalText(500),
 });
 export type RebookInput = z.input<typeof rebookSchema>;
+
+/** Repeat a booking every few weeks: how often, and how many visits in all (the first one included). */
+export const repeatAppointmentSchema = z.object({
+  everyWeeks: z.number().int().min(1).max(12),
+  times: z.number().int().min(2).max(26),
+});
+export type RepeatAppointmentInput = z.input<typeof repeatAppointmentSchema>;
+
+export const cancelFollowingSchema = z.object({
+  reason: optionalText(500),
+  notifyCustomer: z.boolean().default(true),
+});
 export type PublicBookingInput = z.input<typeof publicBookingSchema>;

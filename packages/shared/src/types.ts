@@ -361,6 +361,25 @@ export interface AppointmentDto {
   version: number;
   createdAt: string;
   createdByName: string | null;
+  /** Set when the booking repeats every few weeks. */
+  series: AppointmentSeriesInfo | null;
+}
+
+export interface AppointmentSeriesInfo {
+  id: string;
+  everyWeeks: number;
+  /** This visit's place among the series' visits that are not cancelled (null when this one is cancelled). */
+  position: number | null;
+  count: number;
+  /** Visits after this one that are still to come (what "cancel this and the later ones" would also cancel). */
+  later: number;
+}
+
+/** What repeating a booking did: the visits booked and the dates nobody could do. */
+export interface RepeatResultDto {
+  seriesId: string;
+  booked: Array<{ id: string; startAt: string; staffNames: string[]; staffChanged: boolean }>;
+  skipped: Array<{ startAt: string; reason: string }>;
 }
 
 export interface AppointmentSummary {

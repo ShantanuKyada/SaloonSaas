@@ -1,4 +1,4 @@
-import { availabilityQuery, publicBookingSchema, rebookSchema, zDateTime, type AppointmentStatus } from '@salon/shared';
+import { availabilityQuery, publicBookingSchema, rebookSchema, repeatAppointmentSchema, zDateTime, type AppointmentDto, type AppointmentStatus } from '@salon/shared';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { scaledLimit } from '../../config/env.js';
@@ -14,6 +14,7 @@ import { loadServices } from '../catalog/routes.js';
 import { addEvent, changeStatus, lockAppointment, moveAppointment } from '../appointments/service.js';
 import { loadAppointmentDtos } from '../appointments/dto.js';
 import { createAppointment } from '../appointments/service.js';
+import { cancelFollowing, repeatAppointment } from '../appointments/series.js';
 import { computeDayAvailability } from '../scheduling/routes.js';
 import { createCustomerLink, resolveLink } from '../customer-portal/links.js';
 
@@ -102,6 +103,8 @@ r.get('/:code/next-available', { summary: 'The next day with a free time after a
 });
 
 const NOT_FOUND = 'We could not find this booking. The link may be incorrect.';
+/** How a booking repeats, as the customer needs it: how often, and how many visits come after it. */
+const repeatsOf = (d: { series: AppointmentDto['series'] }) => (d.series ? { everyWeeks: d.series.everyWeeks, later: d.series.later } : null);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const OPEN_STATUSES: readonly string[] = ['scheduled', 'confirmed'];
 const CHANGE_CUTOFF_MS = 2 * 3600_000;
@@ -125,6 +128,8 @@ async function salonState(tx: Tx, orgId: string) {
     onlineOpen: o.status === 'active' && o.onlineBookingEnabled && !o.disabledFeatures.includes('online_booking'),
     /** Customer self-service: the customer's other visits and "Book again". */
     selfService: !o.disabledFeatures.includes('customer_portal'),
+    /** Repeating appointments. */
+    recurring: !o.disabledFeatures.includes('recurring'),
   };
 }
 
@@ -138,7 +143,7 @@ async function bookingFor(token: string, appointmentId?: string) {
     if (id !== link.appointmentId && !salon.selfService) throw new AppError(403, 'FEATURE_OFF', 'Please call the salon to manage your other bookings.');
     const booking = await tx
       .selectFrom('appointments')
-      .select(['id', 'branchId', 'status', 'version', 'startAt', 'customerId'])
+      .select(['id', 'branchId', 'status', 'version', 'startAt', 'customerId', 'seriesId'])
       .where('organizationId', '=', link.orgId)
       .where('id', '=', id)
       .executeTakeFirst();
@@ -232,6 +237,8 @@ r.get('/manage/:token', { summary: 'See a booking from its private link', auth: 
       ...view(dto!, { salonName: salon.name, salonCode: salon.code, branchPhone: branch.phone, timezone: branch.timezone, canChange: changeable(booking.status, booking.startAt) }),
       canMove: salon.onlineOpen,
       selfService: salon.selfService,
+      repeats: repeatsOf(dto!),
+      canRepeat: salon.selfService && salon.recurring && salon.onlineOpen && !dto!.series && changeable(booking.status, booking.startAt),
     };
   });
 });
@@ -294,6 +301,7 @@ r.get('/manage/:token/visits', { summary: "The customer's visits: coming up, bef
         total: d.estimatedAmount,
         isThis: d.id === link.appointmentId,
         canChange: !past && changeable(d.status, d.startAt),
+        repeats: past ? null : repeatsOf(d),
         rebook: past && can && serviceIds.length <= 5 && serviceIds.every((id) => can.has(id)) ? { branchId: d.branchId, serviceIds, staffId: person, staffName: person ? d.items.find((i) => i.staffId === person)?.staffName ?? null : null } : null,
       };
     };
@@ -338,13 +346,15 @@ r.post('/manage/:token/book', { summary: 'Book again from the private link', aut
 
 // ───────────── Cancel or move: the link's own booking, or (self-service) another of the customer's bookings ─────────────
 
-async function cancelOnline(token: string, appointmentId: string | undefined, ip: string | null) {
+async function cancelOnline(token: string, appointmentId: string | undefined, ip: string | null, following = false) {
   const { link, booking } = await bookingFor(token, appointmentId);
   if (!OPEN_STATUSES.includes(booking.status)) throw new AppError(409, 'INVALID_STATUS_TRANSITION', 'This booking can no longer be cancelled online. Please call the salon.');
   if (!changeable(booking.status, booking.startAt)) throw new AppError(409, 'CONFLICT', 'It is too close to the appointment time to cancel online. Please call the salon.');
   await withTenant({ orgId: link.orgId }, async (t) => {
     const ctx = { ...publicContext(link.orgId, booking.branchId, ip), permissions: new Set(['appointments.cancel' as const, 'appointments.status' as const]) };
-    await changeStatus(t, ctx, booking.id, { status: 'cancelled', reason: 'Cancelled by customer (online)', notifyCustomer: true });
+    // "This and the later ones" for a repeating booking; otherwise just this visit.
+    if (following && booking.seriesId) await cancelFollowing(t, ctx, link.orgId, booking.id, 'Cancelled by customer (online)', true);
+    else await changeStatus(t, ctx, booking.id, { status: 'cancelled', reason: 'Cancelled by customer (online)', notifyCustomer: true });
   });
   return { cancelled: true };
 }
@@ -365,9 +375,23 @@ async function moveOnline(token: string, appointmentId: string | undefined, star
 }
 
 const moveBody = z.object({ startAt: zDateTime });
-r.post('/manage/:token/cancel', { summary: 'Cancel from the private link (up to 2 hours before)', auth: 'public', status: 200, middleware: [limiter] }, async ({ params, auth }) => cancelOnline(params.token!, undefined, auth.ip));
+const cancelBody = z.object({ following: z.boolean().optional() });
+r.post('/manage/:token/cancel', { summary: 'Cancel from the private link (up to 2 hours before)', auth: 'public', body: cancelBody, status: 200, middleware: [limiter] }, async ({ params, body, auth }) => cancelOnline(params.token!, undefined, auth.ip, body.following));
 r.post('/manage/:token/reschedule', { summary: 'Move to another valid time from the private link', auth: 'public', body: moveBody, status: 200, middleware: [limiter] }, async ({ params, body, auth }) => moveOnline(params.token!, undefined, body.startAt, auth.ip));
-r.post('/manage/:token/visits/:id/cancel', { summary: 'Cancel another of the customer’s bookings (self-service)', auth: 'public', status: 200, middleware: [limiter] }, async ({ params, auth }) => cancelOnline(params.token!, params.id!, auth.ip));
+r.post('/manage/:token/visits/:id/cancel', { summary: 'Cancel another of the customer’s bookings (self-service)', auth: 'public', body: cancelBody, status: 200, middleware: [limiter] }, async ({ params, body, auth }) => cancelOnline(params.token!, params.id!, auth.ip, body.following));
+
+// The customer repeats their booking every few weeks, with the online rules (same person when they are free).
+const customerRepeat = repeatAppointmentSchema.extend({ times: z.number().int().min(2).max(12) });
+r.post('/manage/:token/repeat', { summary: 'Repeat the booking every few weeks (self-service)', auth: 'public', body: customerRepeat, status: 200, middleware: [bookingLimiter] }, async ({ params, body, auth }) => {
+  const { link, salon, booking } = await bookingFor(params.token!);
+  if (!salon.selfService || !salon.recurring) throw new AppError(403, 'FEATURE_OFF', 'Please call the salon to set up repeating visits.');
+  if (!salon.onlineOpen) throw new AppError(409, 'CONFLICT', 'Online booking is closed at the moment. Please call the salon.');
+  if (!changeable(booking.status, booking.startAt)) throw new AppError(409, 'CONFLICT', 'Only a booking that is still to come can be repeated online.');
+  return withTenant({ orgId: link.orgId }, async (t) => {
+    const ctx = publicContext(link.orgId, booking.branchId, auth.ip);
+    return repeatAppointment(t, ctx, link.orgId, booking.id, { everyWeeks: body.everyWeeks, times: body.times, via: 'customer' });
+  });
+});
 r.post('/manage/:token/visits/:id/reschedule', { summary: 'Move another of the customer’s bookings (self-service)', auth: 'public', body: moveBody, status: 200, middleware: [limiter] }, async ({ params, body, auth }) => moveOnline(params.token!, params.id!, body.startAt, auth.ip));
 
 export const publicBookingRoutes = r;

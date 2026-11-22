@@ -99,6 +99,7 @@ export interface Appointments {
   organizationId: string;
   queueNumber: number | null;
   rescheduleCount: Generated<number>;
+  seriesId: string | null;
   serviceStartedAt: Timestamp | null;
   source: string;
   startAt: Timestamp | null;
@@ -107,6 +108,18 @@ export interface Appointments {
   updatedAt: Generated<Timestamp>;
   updatedBy: string | null;
   version: Generated<number>;
+}
+
+export interface AppointmentSeries {
+  branchId: string;
+  createdAt: Generated<Timestamp>;
+  createdBy: string | null;
+  createdVia: string;
+  customerId: string;
+  everyWeeks: number;
+  id: Generated<string>;
+  occurrences: number;
+  organizationId: string;
 }
 
 export interface AttendanceDays {
@@ -1017,6 +1030,7 @@ export interface DB {
   appointmentEvents: AppointmentEvents;
   appointmentItems: AppointmentItems;
   appointments: Appointments;
+  appointmentSeries: AppointmentSeries;
   attendanceDays: AttendanceDays;
   attendancePunches: AttendancePunches;
   auditLogs: AuditLogs;
