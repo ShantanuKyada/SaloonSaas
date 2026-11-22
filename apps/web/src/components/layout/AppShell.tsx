@@ -289,6 +289,7 @@ function Shell() {
       </a>
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
+        <SupportBanner />
         <Topbar onOpenMenu={() => setMenuOpen(true)} onSearch={() => setSearchOpen(true)} onShortcuts={() => setShortcuts(true)} />
         <main id="main" tabIndex={-1} className="min-w-0 flex-1 px-3 py-4 pb-24 outline-none md:px-6 md:py-6 lg:pb-8">
           <OnboardingBanner />
@@ -313,11 +314,32 @@ function Shell() {
   );
 }
 
+/** A platform administrator inside a salon: say so on every screen, and offer the way back. */
+function SupportBanner() {
+  const user = useUser();
+  const { exitSupport } = useAuth();
+  const navigate = useNavigate();
+  const [leaving, setLeaving] = useState(false);
+  if (!user.support) return null;
+  const leave = async () => {
+    setLeaving(true);
+    await exitSupport();
+    navigate('/platform');
+  };
+  return (
+    <div role="status" className="no-print flex flex-wrap items-center justify-between gap-2 bg-warning-soft px-3 py-2 text-sm text-warning md:px-5">
+      <p><strong className="font-semibold">Support mode: {user.support.organizationName}.</strong> You can see and change everything here; each action is recorded in the salon’s activity log.</p>
+      <Button size="sm" variant="outline" loading={leaving} onClick={() => void leave()}>Back to platform</Button>
+    </div>
+  );
+}
+
 export function AppShell() {
   const user = useUser();
   // Platform administrators have no salon, and anyone who still has to set up two-step sign-in can reach nothing but that
   // screen: both get the plain shell without branch/quick-action context.
-  if (user.isPlatformAdmin || user.twoFactor.setupRequired) {
+  // In support mode a platform administrator works in the salon's own screens.
+  if ((user.isPlatformAdmin && !user.support) || user.twoFactor.setupRequired) {
     return (
       <BranchProvider>
         <QuickActionsProvider>

@@ -62,6 +62,10 @@ export async function checkPackagesBought(
   const bought = new Map<string, { price: number; name: string }>();
   const ids = [...new Set(items.flatMap((i) => (i.buyPackageId ? [i.buyPackageId] : [])))];
   if (!ids.length) return bought;
+  if (o.checkSale) {
+    const org = await tx.selectFrom('organizations').select('disabledFeatures').where('id', '=', o.orgId).executeTakeFirstOrThrow();
+    if (org.disabledFeatures.includes('packages')) throw new AppError(403, 'FEATURE_OFF', 'Packages and combos are not switched on for this salon.');
+  }
   if (items.some((i) => i.buyPackageId && i.customerPackageItemId)) {
     throw new AppError(400, 'VALIDATION_ERROR', 'A service can use a package the customer owns or one they buy at this visit, not both.');
   }

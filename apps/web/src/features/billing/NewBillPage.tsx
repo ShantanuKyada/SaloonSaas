@@ -11,7 +11,7 @@ import { Badge, Card, CardHeader, EmptyState, InlineNotice, PageHeader, Skeleton
 import { Checkbox, Field, Input, MoneyInput, Segmented, Select, Switch, Textarea } from '@/components/ui/form';
 import { Modal } from '@/components/ui/overlay';
 import { api, ApiError, newIdempotencyKey } from '@/lib/api';
-import { useCan } from '@/lib/auth';
+import { useCan, useFeature } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { friendlyError } from '@/lib/errors';
 import { fmtDay } from '@/lib/format';
@@ -32,6 +32,7 @@ export function Component() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const can = useCan();
+  const featureOn = useFeature();
   const money = useMoney();
   const { branchId, branches } = useBranch();
   const [billBranch, setBillBranch] = useState(branchId);
@@ -186,7 +187,7 @@ export function Component() {
               <h2 className="text-base font-semibold">Services and items</h2>
               <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="soft" icon={<Plus className="size-4" />} onClick={() => setAdding('service')}>Add service</Button>
-                {can('packages.manage') || can('billing.create') ? <Button size="sm" variant="outline" icon={<Package className="size-4" />} onClick={() => setAdding('package')}>Sell package</Button> : null}
+                {featureOn('packages') && (can('packages.manage') || can('billing.create')) ? <Button size="sm" variant="outline" icon={<Package className="size-4" />} onClick={() => setAdding('package')}>Sell package</Button> : null}
                 <Button size="sm" variant="outline" onClick={() => setAdding('custom')}>Other item</Button>
               </div>
             </div>
@@ -244,8 +245,8 @@ export function Component() {
 
           {lines.length > 0 && (
             <Card>
-              <CardHeader title="Offers and discounts" />
-              <div className="grid gap-4 sm:grid-cols-2">
+              <CardHeader title={featureOn('offers') ? 'Offers and discounts' : 'Discounts'} />
+              {featureOn('offers') && <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Offer" hint={p?.offerMessage ?? undefined}>
                   <Select value={offerId ?? ''} onChange={(e) => { setOfferId(e.target.value || null); if (e.target.value) setOfferCode(''); }}>
                     <option value="">No offer</option>
@@ -255,7 +256,7 @@ export function Component() {
                 <Field label="Or enter an offer code" optional>
                   <Input value={offerCode} disabled={!!offerId} onChange={(e) => setOfferCode(e.target.value.toUpperCase())} placeholder="e.g. FESTIVE10" />
                 </Field>
-              </div>
+              </div>}
               {p?.offer && <p className="mt-2 flex items-center gap-1.5 text-sm text-success"><Gift className="size-4" aria-hidden />“{p.offer.name}” applied: {money(p.offerDiscount)} off</p>}
               {can('billing.discount') && (
                 <div className="mt-4 border-t border-line pt-4">

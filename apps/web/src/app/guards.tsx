@@ -1,9 +1,9 @@
-import type { Permission } from '@salon/shared';
+import type { FeatureKey, Permission } from '@salon/shared';
 import { Lock } from 'lucide-react';
 import { Link, Navigate, Outlet, useLocation } from 'react-router';
 import { Spinner } from '@/components/ui/display';
 import { ButtonLink } from '@/components/ui/button';
-import { homePath, useAuth, useCan, useUser } from '@/lib/auth';
+import { homePath, useAuth, useCan, useFeature, useUser } from '@/lib/auth';
 
 /** Everything behind sign-in. Remembers where the person was going so sign-in can take them back. */
 export function RequireAuth() {
@@ -30,12 +30,30 @@ export function Forbidden() {
   );
 }
 
-/** Shows the page only to people holding at least one of the listed permissions (the API enforces the same rules). */
-export function RequirePermission({ any }: { any: Permission[] }) {
+/**
+ * Shows the page only to people holding at least one of the listed permissions, and only while its feature is on for
+ * the salon (the API enforces the same rules). Platform administrators reach salon pages only in support mode.
+ */
+export function RequirePermission({ any, feature }: { any: Permission[]; feature?: FeatureKey }) {
   const can = useCan();
+  const featureOn = useFeature();
   const user = useUser();
-  if (user.isPlatformAdmin) return <Forbidden />;
+  if (user.isPlatformAdmin && !user.support) return <Forbidden />;
+  if (feature && !featureOn(feature)) return <FeatureOff />;
   return can(any) ? <Outlet /> : <Forbidden />;
+}
+
+function FeatureOff() {
+  const user = useUser();
+  const here = useLocation().pathname;
+  return (
+    <div className="mx-auto max-w-md py-16 text-center">
+      <span className="mx-auto mb-4 grid size-14 place-items-center rounded-full bg-surface-2 text-muted"><Lock className="size-6" aria-hidden /></span>
+      <h1 className="text-xl font-semibold">This part of SalonOS is switched off for your salon</h1>
+      <p className="mt-2 text-muted">Contact SalonOS support if you would like it switched on.</p>
+      {homePath(user) !== here && <div className="mt-6"><ButtonLink to={homePath(user)}>Go to my home screen</ButtonLink></div>}
+    </div>
+  );
 }
 
 export function RequirePlatformAdmin() {

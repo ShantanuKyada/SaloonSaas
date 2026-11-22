@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardHeader, ErrorState, InlineNotice, PageHeader, Skeleton, TabPanel, Tabs } from '@/components/ui/display';
 import { Field, FormError, Input, MoneyInput, Select, Switch, TimeInput, Textarea } from '@/components/ui/form';
 import { api, ApiError } from '@/lib/api';
-import { useAuth, useCan, useUser } from '@/lib/auth';
+import { useAuth, useCan, useFeature, useUser } from '@/lib/auth';
 import { friendlyError } from '@/lib/errors';
 import { withCurrent } from '@/lib/timezones';
 import { ConnectionsPanel } from './ConnectionsPanel';
@@ -131,6 +131,7 @@ const saveButton = (st: ReturnType<typeof useSettings>, keys: Array<keyof Settin
 
 function BookingPanel() {
   const user = useUser();
+  const featureOn = useFeature();
   const link = `${window.location.origin}/book/${user.organization?.code ?? ''}`;
   return (
     <SettingsShell>
@@ -147,6 +148,7 @@ function BookingPanel() {
             <Switch checked={st.s.allowOutsideHours} onCheckedChange={(v) => st.set({ allowOutsideHours: v })} label="Allow booking outside working hours" description="Only people with the “book outside working hours” permission can use this, and the system asks them to confirm." />
           </Section>
           <Section title="Online booking" description="Let customers book from their phone without calling." footer={saveButton(st, ['onlineBookingEnabled'])}>
+            {!featureOn('online_booking') && <InlineNotice tone="warning" title="Online booking is switched off for your salon">Contact SalonOS support to switch it on. Until then the booking page stays closed, whatever is chosen here.</InlineNotice>}
             <Switch checked={st.s.onlineBookingEnabled} onCheckedChange={(v) => st.set({ onlineBookingEnabled: v })} label="Customers can book online" />
             {st.s.onlineBookingEnabled && (
               <div className="rounded-xl border border-line bg-surface-2 p-3 text-sm">

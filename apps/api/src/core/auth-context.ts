@@ -1,4 +1,4 @@
-import { isPermission, twoFactorApplies, type HomeScreen, type Permission, type TwoFactorRequirement } from '@salon/shared';
+import { ALL_PERMISSIONS, isPermission, permissionsOffFor, twoFactorApplies, type FeatureKey, type HomeScreen, type Permission, type TwoFactorRequirement } from '@salon/shared';
 import { jwtVerify } from 'jose';
 import { env, isProduction } from '../config/env.js';
 import { withSystem } from '../db/tenant.js';
@@ -24,6 +24,10 @@ export interface AuthContext {
   twoFactorRequired: boolean;
   /** Required but not set up yet: only the account and security routes are reachable until it is. */
   mfaSetupRequired: boolean;
+  /** Features the platform has switched off for this salon; their permissions are already removed. */
+  disabledFeatures: readonly string[];
+  /** A platform administrator working inside a salon (support mode). */
+  supportMode: boolean;
   requestId: string;
   ip: string | null;
   userAgent: string | null;
@@ -46,6 +50,8 @@ export function systemContext(orgId: string | null, requestId = 'system'): AuthC
     twoFactorEnabled: false,
     twoFactorRequired: false,
     mfaSetupRequired: false,
+    disabledFeatures: [],
+    supportMode: false,
     requestId,
     ip: null,
     userAgent: null,
@@ -85,6 +91,7 @@ async function loadPrincipal(userId: string): Promise<Principal | null> {
         'r.homeScreen',
         'r.isLocked',
         'o.status as orgStatus',
+        'o.disabledFeatures',
         's.id as staffId',
         'u.totpEnabledAt',
         'os.twoFactorRequirement',
@@ -121,6 +128,9 @@ async function loadPrincipal(userId: string): Promise<Principal | null> {
             .where('b.status', '!=', 'archived')
             .execute();
       branchIds = branchRows.map((b) => b.id);
+      // Features the platform switched off for this salon take their permissions away from every role.
+      const off = permissionsOffFor(user.disabledFeatures ?? []);
+      permissions = permissions.filter((p) => !off.has(p));
     }
 
     // Two-step sign-in policy: the salon decides for owners and managers; platform administrators always need it in production.
@@ -143,8 +153,58 @@ async function loadPrincipal(userId: string): Promise<Principal | null> {
       twoFactorEnabled,
       twoFactorRequired: required,
       mfaSetupRequired: required && !twoFactorEnabled,
+      disabledFeatures: user.disabledFeatures ?? [],
+      supportMode: false,
     };
   });
+}
+
+/**
+ * A platform administrator inside a salon (support mode): everything the salon's owner can do, in every branch, minus
+ * the features switched off for that salon. Actions are recorded under the administrator's own name.
+ */
+async function loadSupportPrincipal(adminId: string, orgId: string): Promise<Principal | null> {
+  const admin = await loadPrincipal(adminId);
+  if (!admin?.isPlatformAdmin) return null;
+  return withSystem(async (tx) => {
+    const org = await tx.selectFrom('organizations').select(['id', 'status', 'disabledFeatures']).where('id', '=', orgId).executeTakeFirst();
+    if (!org || org.status === 'archived') return null;
+    const branches = await tx.selectFrom('branches').select('id').where('organizationId', '=', orgId).where('status', '!=', 'archived').execute();
+    const off = permissionsOffFor(org.disabledFeatures);
+    return {
+      ...admin,
+      orgId,
+      roleId: null,
+      roleKey: 'owner',
+      homeScreen: 'owner_dashboard' as HomeScreen,
+      permissions: new Set(ALL_PERMISSIONS.filter((p) => !off.has(p))),
+      allBranches: true,
+      branchIds: branches.map((b) => b.id),
+      staffId: null,
+      disabledFeatures: org.disabledFeatures,
+      supportMode: true,
+    };
+  });
+}
+
+async function getSupportPrincipal(adminId: string, orgId: string): Promise<Principal | null> {
+  const key = `${adminId}@${orgId}`;
+  const hit = cache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.principal;
+  const principal = await loadSupportPrincipal(adminId, orgId);
+  if (principal) cache.set(key, { principal, expires: Date.now() + CACHE_TTL_MS });
+  else cache.delete(key);
+  return principal;
+}
+
+/** Is this feature switched on for the user's salon? */
+export function featureOn(auth: Pick<AuthContext, 'disabledFeatures'>, feature: FeatureKey): boolean {
+  return !auth.disabledFeatures.includes(feature);
+}
+
+/** Refuse when the platform has switched this feature off for the salon. */
+export function requireFeature(auth: Pick<AuthContext, 'disabledFeatures'>, feature: FeatureKey, what: string): void {
+  if (!featureOn(auth, feature)) throw new AppError(403, 'FEATURE_OFF', `${what} is not switched on for this salon.`);
 }
 
 export async function getPrincipal(userId: string): Promise<Principal | null> {
@@ -165,6 +225,7 @@ export async function authenticateBearer(
     throw new AppError(401, 'UNAUTHENTICATED', 'Please sign in to continue.');
   }
   let userId: string;
+  let supportOrg: string | null = null;
   try {
     const { payload } = await jwtVerify(authorization.slice(7), ACCESS_TOKEN_KEY, {
       issuer: env.JWT_ISSUER,
@@ -173,11 +234,12 @@ export async function authenticateBearer(
     });
     if (typeof payload.sub !== 'string') throw new Error('no subject');
     userId = payload.sub;
+    if (payload.support === true && typeof payload.org === 'string') supportOrg = payload.org;
   } catch {
     metrics.authFailures.inc({ reason: 'invalid_token' });
     throw new AppError(401, 'SESSION_EXPIRED', 'Your session has expired. Please sign in again.');
   }
-  const principal = await getPrincipal(userId);
+  const principal = supportOrg ? await getSupportPrincipal(userId, supportOrg) : await getPrincipal(userId);
   if (!principal) {
     metrics.authFailures.inc({ reason: 'disabled_user' });
     throw new AppError(401, 'ACCOUNT_DISABLED', 'This account is disabled. Please contact your salon owner.');

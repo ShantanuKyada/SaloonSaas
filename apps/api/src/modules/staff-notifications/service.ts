@@ -46,7 +46,7 @@ async function bookingContext(tx: Tx, orgId: string, appointmentId: string, incl
     .innerJoin('customers as c', 'c.id', 'a.customerId')
     .innerJoin('branches as b', 'b.id', 'a.branchId')
     .innerJoin('organizations as o', 'o.id', 'a.organizationId')
-    .select(['a.id', 'a.branchId', 'a.bookingNumber', 'c.fullName as customerName', 'b.name as branchName', 'b.timezone', 'o.name as salonName'])
+    .select(['a.id', 'a.branchId', 'a.bookingNumber', 'c.fullName as customerName', 'b.name as branchName', 'b.timezone', 'o.name as salonName', 'o.disabledFeatures'])
     .where('a.organizationId', '=', orgId)
     .where('a.id', '=', appointmentId)
     .executeTakeFirstOrThrow();
@@ -76,6 +76,8 @@ const when = (d: Date | null, tz: string) => (d ? DateTime.fromJSDate(d).setZone
  */
 export async function bookingChanged(tx: Tx, auth: AuthContext, orgId: string, settings: OrgSettings, appointmentId: string, before: StaffStarts, opts: { cancelled?: boolean; walkIn?: boolean } = {}): Promise<void> {
   const ctx = await bookingContext(tx, orgId, appointmentId, !!opts.cancelled);
+  // The staff app switched off for this salon: no bell, no booking messages to team members.
+  if (ctx.disabledFeatures.includes('staff_app')) return;
   const tz = ctx.timezone;
   const base = { branchId: ctx.branchId, appointmentId: ctx.id };
   const notices: StaffNotice[] = [];

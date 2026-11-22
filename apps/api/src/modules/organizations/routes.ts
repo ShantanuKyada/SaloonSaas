@@ -1,4 +1,6 @@
 import {
+  FEATURES,
+  isFeatureKey,
   createOrganizationSchema,
   ONBOARDING_STEPS,
   onboardingStepSchema,
@@ -9,7 +11,8 @@ import {
 } from '@salon/shared';
 import { sql } from 'kysely';
 import { audit } from '../../core/audit.js';
-import { invalidatePrincipal, requireOrgId } from '../../core/auth-context.js';
+import { authenticateBearer, invalidatePrincipal, requireOrgId } from '../../core/auth-context.js';
+import { buildSession, issueSupportToken, SUPPORT_SESSION_SECONDS } from '../auth/service.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { createRouter, paged } from '../../core/router.js';
 import { loadOrg, optionalPhone } from '../../core/validation.js';
@@ -112,23 +115,51 @@ platform.patch(
           ...(body.subscriptionPlan ? { subscriptionPlan: body.subscriptionPlan } : {}),
           ...(body.subscriptionStatus ? { subscriptionStatus: body.subscriptionStatus } : {}),
           ...(body.maxBranches !== undefined ? { maxBranches: body.maxBranches } : {}),
+          ...(body.disabledFeatures ? { disabledFeatures: [...new Set(body.disabledFeatures)].sort() } : {}),
         })
         .where('id', '=', params.id!)
         .returningAll()
         .executeTakeFirstOrThrow();
-      if (body.status && body.status !== before.status) invalidatePrincipal();
+      // Status and features change what everyone in the salon may do: drop cached sessions now.
+      if ((body.status && body.status !== before.status) || body.disabledFeatures) invalidatePrincipal();
+      const switched = body.disabledFeatures ? featureChanges(before.disabledFeatures, after.disabledFeatures) : '';
       await audit(t, auth, {
         organizationId: after.id,
         action: 'organization.updated',
         entityType: 'organization',
         entityId: after.id,
-        summary: `Platform updated salon "${after.name}"`,
-        before: { status: before.status, subscriptionPlan: before.subscriptionPlan, subscriptionStatus: before.subscriptionStatus, maxBranches: before.maxBranches },
-        after: { status: after.status, subscriptionPlan: after.subscriptionPlan, subscriptionStatus: after.subscriptionStatus, maxBranches: after.maxBranches },
+        summary: `Platform updated salon "${after.name}"${switched ? `: ${switched}` : ''}`,
+        before: { status: before.status, subscriptionPlan: before.subscriptionPlan, subscriptionStatus: before.subscriptionStatus, maxBranches: before.maxBranches, disabledFeatures: before.disabledFeatures.join(', ') },
+        after: { status: after.status, subscriptionPlan: after.subscriptionPlan, subscriptionStatus: after.subscriptionStatus, maxBranches: after.maxBranches, disabledFeatures: after.disabledFeatures.join(', ') },
       });
       return after;
     }),
 );
+
+/** "Packages and Offers switched off, Reports switched on" for the activity log. */
+function featureChanges(before: string[], after: string[]): string {
+  const name = (k: string) => (isFeatureKey(k) ? FEATURES[k].label : k);
+  const off = after.filter((k) => !before.includes(k)).map(name);
+  const on = before.filter((k) => !after.includes(k)).map(name);
+  return [off.length ? `${off.join(', ')} switched off` : '', on.length ? `${on.join(', ')} switched on` : ''].filter(Boolean).join('; ');
+}
+
+// Support mode: a platform administrator opens a salon and works in it as its owner would, for an hour at most.
+// The token keeps the salon's own tenant rules; every action is recorded in the salon's activity log, marked as support.
+platform.post('/organizations/:id/support', { summary: 'Open a salon in support mode', auth: 'platform', status: 200 }, async ({ tx, auth, params }) => {
+  if (auth.supportMode) throw new AppError(409, 'CONFLICT', 'Leave the salon you are in before opening another.');
+  const org = await tx(async (t) => {
+    const row = await t.selectFrom('organizations').select(['id', 'name', 'status']).where('id', '=', params.id!).executeTakeFirst();
+    if (!row) throw notFound('Organization');
+    if (row.status === 'archived') throw new AppError(409, 'CONFLICT', 'This salon is archived. Restore it before opening it.');
+    await audit(t, auth, { organizationId: row.id, action: 'platform.support_opened', entityType: 'organization', entityId: row.id, summary: `${auth.fullName} (platform administrator) opened the salon in support mode` });
+    return row;
+  });
+  const accessToken = await issueSupportToken(auth.userId, org.id);
+  const expiresAt = new Date(Date.now() + SUPPORT_SESSION_SECONDS * 1000);
+  const supportAuth = await authenticateBearer(`Bearer ${accessToken}`, { requestId: auth.requestId, ip: auth.ip, userAgent: auth.userAgent });
+  return { accessToken, expiresIn: SUPPORT_SESSION_SECONDS, expiresAt: expiresAt.toISOString(), user: await buildSession(auth.userId, supportAuth, expiresAt) };
+});
 
 // ───────────── Organization (owner) ─────────────
 const org = createRouter('/organization', 'Salon profile & settings');

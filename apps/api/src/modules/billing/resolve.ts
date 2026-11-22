@@ -1,6 +1,6 @@
 import { calculateInvoice, formatMoney, type DiscountRule, type InvoiceCalc, type InvoicePreview, type invoiceDraftSchema } from '@salon/shared';
 import type { z } from 'zod';
-import { assertBranchAccess, hasPermission, requireOrgId, type AuthContext } from '../../core/auth-context.js';
+import { assertBranchAccess, featureOn, hasPermission, requireFeature, requireOrgId, type AuthContext } from '../../core/auth-context.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { localDateOf } from '../../core/time.js';
 import { loadBranch, loadOrg, loadSettings, type BranchRow, type OrgContext, type OrgSettings } from '../../core/validation.js';
@@ -54,6 +54,9 @@ export interface ResolveOptions {
 export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDraft, opts: ResolveOptions): Promise<Resolved> {
   const orgId = requireOrgId(auth);
   assertBranchAccess(auth, input.branchId);
+  // Selling packages needs the feature; sessions from packages customers already own can always be used.
+  if (input.lines.some((l) => l.type === 'package_sale')) requireFeature(auth, 'packages', 'Selling packages and combos');
+  const offersOn = featureOn(auth, 'offers');
   const [org, branch, settings] = await Promise.all([loadOrg(tx, orgId), loadBranch(tx, orgId, input.branchId), loadSettings(tx, orgId)]);
   const today = localDateOf(new Date(), branch.timezone);
 
@@ -273,7 +276,10 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
   };
   let offer: Resolved['offer'] = null;
   let offerMessage: string | null = null;
-  if (input.offerId || input.offerCode) {
+  if ((input.offerId || input.offerCode) && !offersOn) {
+    offerMessage = 'Offers are not switched on for this salon.';
+    if (opts.strict) throw new AppError(403, 'FEATURE_OFF', offerMessage);
+  } else if (input.offerId || input.offerCode) {
     const found = await loadOffers(tx, orgId, input.offerId ? { id: input.offerId } : { code: input.offerCode! });
     if (!found.length) {
       offerMessage = 'This offer code is not valid or is no longer active.';
@@ -306,7 +312,7 @@ export async function resolveInvoice(tx: Tx, auth: AuthContext, input: InvoiceDr
   });
 
   let applicableOffers: InvoicePreview['applicableOffers'] = [];
-  if (opts.listOffers) {
+  if (opts.listOffers && offersOn) {
     const candidates = (await loadOffers(tx, orgId)).filter((o) => today >= o.validFrom && today <= o.validTo);
     const results = await evaluateOffers(tx, offerCtx, candidates);
     applicableOffers = results

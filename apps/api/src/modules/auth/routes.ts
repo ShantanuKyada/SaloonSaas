@@ -104,7 +104,7 @@ r.post('/logout', { summary: 'Sign out this device', auth: 'public', status: 204
   return undefined;
 });
 
-r.get('/me', { summary: 'Current user, organization, branches and permissions', auth: 'any', allowUnenrolled: true }, async ({ auth }) => buildSession(auth.userId));
+r.get('/me', { summary: 'Current user, organization, branches and permissions', auth: 'any', allowUnenrolled: true }, async ({ auth }) => buildSession(auth.userId, auth));
 
 r.post('/change-password', { summary: 'Change own password', auth: 'any', allowUnenrolled: true, body: changePasswordSchema, status: 204 }, async ({ auth, body }) => {
   await changePassword(auth, body.currentPassword, body.newPassword);

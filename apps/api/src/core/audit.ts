@@ -67,7 +67,8 @@ export async function audit(tx: Tx, auth: AuthContext, entry: AuditEntry): Promi
       action: entry.action,
       entityType: entry.entityType,
       entityId: entry.entityId ?? null,
-      summary: entry.summary ?? null,
+      // Support mode: say so on every line, so the salon can tell the platform team's changes from its own.
+      summary: auth.supportMode ? `${entry.summary ?? entry.action} (platform support)` : entry.summary ?? null,
       oldValues: changes.old ? JSON.stringify(changes.old) : null,
       newValues: changes.new ? JSON.stringify(changes.new) : null,
       ip: auth.ip,

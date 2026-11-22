@@ -18,6 +18,7 @@ test.describe('Reports', () => {
     await expect(page.getByRole('columnheader', { name: 'Week starting' })).toBeVisible();
 
     const downloadPromise = page.waitForEvent('download');
+    const exportRequest = page.waitForRequest((r) => r.url().includes('/reports/revenue-daily') && r.url().includes('format=csv'));
     await page.getByRole('button', { name: 'Download for Excel' }).click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toMatch(/^revenue-daily_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.csv$/);
@@ -27,9 +28,12 @@ test.describe('Reports', () => {
     expect(lines[0]).toContain('Week starting');
     expect(lines.at(-1)).toContain('Total');
 
-    // The file and the API agree: same dates, same number of data rows (the first line is the header and the last the totals)
+    // The file and the API agree: same dates, same number of data rows (the first line is the header and the last the totals).
+    // Asked exactly as the download was (dates, grouping and the branch chosen in the top bar).
     const [, from, to] = /_(\d{4}-\d{2}-\d{2})_to_(\d{4}-\d{2}-\d{2})/.exec(download.suggestedFilename())!;
-    const json = await api.get<{ rows: unknown[] }>('/reports/revenue-daily', { from, to, groupBy: 'week' });
+    const sent = new URL((await exportRequest).url()).searchParams;
+    expect([sent.get('from'), sent.get('to'), sent.get('groupBy')]).toEqual([from, to, 'week']);
+    const json = await api.get<{ rows: unknown[] }>('/reports/revenue-daily', { from, to, groupBy: 'week', branchId: sent.get('branchId') ?? undefined });
     expect(lines.length - 2).toBe(json.rows.length);
   });
 

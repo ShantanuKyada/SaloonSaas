@@ -586,6 +586,7 @@ export interface Organizations {
   country: Generated<string>;
   createdAt: Generated<Timestamp>;
   currency: Generated<string>;
+  disabledFeatures: Generated<string[]>;
   currentPeriodEndsAt: Timestamp | null;
   email: string | null;
   id: Generated<string>;

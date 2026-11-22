@@ -1,4 +1,4 @@
-import type { Permission } from '@salon/shared';
+import type { FeatureKey, Permission } from '@salon/shared';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { AppShell } from '@/components/layout/AppShell';
 import { Forbidden, HomeRedirect, NotFound, RequireAuth, RequirePermission, RequirePlatformAdmin } from './guards';
@@ -8,7 +8,7 @@ import { RouteError } from './RouteError';
 // `lazy` modules export a `Component`. `handle.crumb` feeds the breadcrumb in the top bar.
 
 const page = (load: () => Promise<{ Component: React.ComponentType }>, crumb?: string): RouteObject => ({ lazy: load, handle: crumb ? { crumb } : undefined });
-const guarded = (any: Permission[], children: RouteObject[], crumb?: string, path?: string): RouteObject => ({ path, handle: crumb ? { crumb } : undefined, element: <RequirePermission any={any} />, children });
+const guarded = (any: Permission[], children: RouteObject[], crumb?: string, path?: string, feature?: FeatureKey): RouteObject => ({ path, handle: crumb ? { crumb } : undefined, element: <RequirePermission any={any} feature={feature} />, children });
 
 const routes: RouteObject[] = [
   { path: '/login', lazy: () => import('@/features/auth/LoginPage'), errorElement: <RouteError /> },
@@ -35,7 +35,7 @@ const routes: RouteObject[] = [
             { path: 'my-day', ...page(() => import('@/features/dashboards/MyDayPage'), 'My day') },
             { path: 'my-appointments', ...page(() => import('@/features/me/MyAppointmentsPage'), 'My appointments') },
             { path: 'my-schedule', ...page(() => import('@/features/me/MySchedulePage'), 'My schedule & leave') },
-          ]),
+          ], undefined, undefined, 'staff_app'),
           guarded(['appointments.create', 'walkins.manage', 'billing.create'], [{ path: 'desk', ...page(() => import('@/features/desk/FrontDeskPage'), 'Front desk') }]),
 
           // Appointments
@@ -44,7 +44,7 @@ const routes: RouteObject[] = [
             { path: 'appointments', ...page(() => import('@/features/appointments/AppointmentListPage'), 'Appointments') },
             { path: 'appointments/:id', ...page(() => import('@/features/appointments/AppointmentListPage'), 'Appointments') },
           ]),
-          guarded(['walkins.manage', 'appointments.view'], [{ path: 'walk-ins', ...page(() => import('@/features/walkins/WalkInsPage'), 'Walk-ins') }]),
+          guarded(['walkins.manage', 'appointments.view'], [{ path: 'walk-ins', ...page(() => import('@/features/walkins/WalkInsPage'), 'Walk-ins') }], undefined, undefined, 'walk_ins'),
 
           // Customers
           guarded(['customers.view'], [
@@ -89,7 +89,7 @@ const routes: RouteObject[] = [
           guarded(['reports.operations', 'reports.financial', 'reports.staff', 'attendance.view', 'ledger.view'], [
             { path: 'reports', ...page(() => import('@/features/reports/ReportsPage'), 'Reports') },
             { path: 'reports/:key', ...page(() => import('@/features/reports/ReportViewerPage'), 'Report') },
-          ]),
+          ], undefined, undefined, 'reports'),
 
           // Messages
           guarded(['notifications.view', 'notifications.manage'], [

@@ -1,5 +1,6 @@
 export * from './constants.js';
 export * from './permissions.js';
+export * from './features.js';
 export * from './money.js';
 export * from './phone.js';
 export * from './appointment-status.js';

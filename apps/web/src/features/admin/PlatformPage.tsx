@@ -1,7 +1,8 @@
-import { createOrganizationSchema } from '@salon/shared';
+import { createOrganizationSchema, FEATURE_KEYS, FEATURES, type FeatureKey, type SessionUser } from '@salon/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus } from 'lucide-react';
+import { LogIn, Plus } from 'lucide-react';
 import { useState } from 'react';
+import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge, Card, EmptyState, ErrorState, InlineNotice, PageHeader, Skeleton, StatCard, type Tone } from '@/components/ui/display';
@@ -9,6 +10,7 @@ import { Field, FormError, Input, SearchInput, Select, Switch } from '@/componen
 import { Drawer } from '@/components/ui/overlay';
 import { DataTable, type Column } from '@/components/ui/table';
 import { api, ApiError } from '@/lib/api';
+import { useAuth } from '@/lib/auth';
 import { friendlyError } from '@/lib/errors';
 import { fmtDateTime } from '@/lib/format';
 import { useDebounced } from '@/lib/hooks';
@@ -16,7 +18,7 @@ import { withCurrent } from '@/lib/timezones';
 
 interface Overview { activeOrganizations: number; suspendedOrganizations: number; activeBranches: number; activeUsers: number; customers: number; appointmentsLast30Days: number }
 interface OrgRow { id: string; code: string; name: string; email: string | null; phone: string | null; status: string; subscriptionPlan: string; subscriptionStatus: string; trialEndsAt: string | null; createdAt: string; onboardingCompletedAt: string | null; branchCount: number; userCount: number; customerCount: number; lastActivityAt: string | null }
-interface OrgDetail extends OrgRow { maxBranches: number | null; branches: Array<{ id: string; code: string; name: string; city: string | null; status: string }>; owners: Array<{ id: string; fullName: string; email: string | null; phone: string | null; lastLoginAt: string | null; status: string }> }
+interface OrgDetail extends OrgRow { maxBranches: number | null; disabledFeatures: string[]; branches: Array<{ id: string; code: string; name: string; city: string | null; status: string }>; owners: Array<{ id: string; fullName: string; email: string | null; phone: string | null; lastLoginAt: string | null; status: string }> }
 
 const STATUS: Record<string, { label: string; tone: Tone }> = { active: { label: 'Active', tone: 'success' }, suspended: { label: 'Suspended', tone: 'danger' }, archived: { label: 'Archived', tone: 'neutral' } };
 const PLANS = ['trial', 'starter', 'growth', 'enterprise'] as const;
@@ -125,8 +127,27 @@ function OrgDrawer({ id, onClose }: { id: string; onClose: () => void }) {
     onError: (e) => toast.error(friendlyError(e).message),
   });
   const d = q.data;
+  const { enterSupport } = useAuth();
+  const navigate = useNavigate();
+  const open = useMutation({
+    mutationFn: () => api.post<{ accessToken: string; expiresAt: string; user: SessionUser }>(`/platform/organizations/${id}/support`),
+    onSuccess: (session) => {
+      enterSupport(session);
+      toast.success(`You are in ${session.user.organization?.name ?? 'the salon'} (support mode)`);
+      navigate('/');
+    },
+    onError: (e) => toast.error(friendlyError(e).message),
+  });
+  const off = new Set(d?.disabledFeatures ?? []);
+  const toggle = (key: FeatureKey, on: boolean) => {
+    const next = new Set(off);
+    if (on) next.delete(key);
+    else next.add(key);
+    update.mutate({ disabledFeatures: [...next] });
+  };
   return (
-    <Drawer open onOpenChange={(o) => !o && onClose()} title={d?.name ?? 'Salon'} description={d ? `${d.code} · created ${fmtDateTime(d.createdAt, 'Asia/Kolkata')}` : undefined} size="md">
+    <Drawer open onOpenChange={(o) => !o && onClose()} title={d?.name ?? 'Salon'} description={d ? `${d.code} · created ${fmtDateTime(d.createdAt, 'Asia/Kolkata')}` : undefined} size="md"
+      footer={d && d.status !== 'archived' ? <Button icon={<LogIn className="size-4" />} loading={open.isPending} onClick={() => open.mutate()}>Open salon (support mode)</Button> : undefined}>
       {q.isLoading && <Skeleton className="h-64" />}
       {q.isError && <ErrorState error={q.error} onRetry={() => void q.refetch()} compact />}
       {d && (
@@ -138,6 +159,15 @@ function OrgDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             <Field label="Billing status"><Select value={d.subscriptionStatus} onChange={(e) => update.mutate({ subscriptionStatus: e.target.value })}>{SUB.map((p) => <option key={p} value={p}>{SUB_LABEL[p]}</option>)}</Select></Field>
             <Field label="Branch limit" hint="Empty means unlimited."><Input type="number" min={1} defaultValue={d.maxBranches ?? ''} onBlur={(e) => { const next = e.target.value === '' ? null : Number(e.target.value); if (next !== d.maxBranches) update.mutate({ maxBranches: next }); }} /></Field>
           </div>
+          <section aria-labelledby="features-heading">
+            <h3 id="features-heading" className="text-sm font-semibold">Features</h3>
+            <p className="mb-3 text-sm text-muted">A switched-off feature disappears for everyone in this salon, its owner included.</p>
+            <div className="space-y-3">
+              {FEATURE_KEYS.map((key) => (
+                <Switch key={key} checked={!off.has(key)} disabled={update.isPending} onCheckedChange={(on) => toggle(key, on)} label={FEATURES[key].label} description={FEATURES[key].description} />
+              ))}
+            </div>
+          </section>
           <section><h3 className="mb-2 text-sm font-semibold">Owners</h3><ul className="divide-y divide-line text-sm">{d.owners.map((u) => <li key={u.id} className="py-2"><p className="font-medium">{u.fullName}</p><p className="text-muted">{u.email ?? u.phone} · {u.lastLoginAt ? `last signed in ${fmtDateTime(u.lastLoginAt, 'Asia/Kolkata')}` : 'never signed in'}</p></li>)}</ul></section>
           <section><h3 className="mb-2 text-sm font-semibold">Branches</h3><ul className="divide-y divide-line text-sm">{d.branches.map((b) => <li key={b.id} className="flex justify-between py-2"><span>{b.name}{b.city ? `, ${b.city}` : ''}</span><Badge>{b.code}</Badge></li>)}</ul></section>
         </div>

@@ -31,6 +31,18 @@ const listeners = new Set<() => void>();
 export const setAccessToken = (token: string | null) => {
   accessToken = token;
 };
+
+// Support mode: a platform administrator working inside a salon on a short-lived token that is never renewed. When
+// it runs out the person goes back to the platform, instead of the app renewing their own (platform) session.
+let supportMode = false;
+const supportEndedListeners = new Set<() => void>();
+export const setSupportMode = (on: boolean) => {
+  supportMode = on;
+};
+export const onSupportEnded = (fn: () => void) => {
+  supportEndedListeners.add(fn);
+  return () => supportEndedListeners.delete(fn);
+};
 export const getAccessToken = () => accessToken;
 /** Called when the session can no longer be renewed (signed out elsewhere, disabled, expired). */
 export const onSessionLost = (fn: () => void) => {
@@ -141,7 +153,9 @@ async function send(method: string, path: string, opts: RequestOptions): Promise
 
 export async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<{ data: T; meta?: PageMeta }> {
   let res = await send(method, path, opts);
-  if (res.status === 401 && !opts.noRefresh && !path.startsWith('/auth/')) {
+  if (res.status === 401 && supportMode) {
+    supportEndedListeners.forEach((fn) => fn());
+  } else if (res.status === 401 && !opts.noRefresh && !path.startsWith('/auth/')) {
     if (await refreshSession()) res = await send(method, path, opts);
     else {
       listeners.forEach((fn) => fn());

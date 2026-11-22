@@ -38,6 +38,8 @@ export interface OrganizationSummary {
   taxLabel: string;
   logoUrl: string | null;
   onboardingCompleted: boolean;
+  /** Features the platform has switched off for this salon (see FEATURES). */
+  disabledFeatures: string[];
 }
 
 export interface SessionUser {
@@ -53,6 +55,8 @@ export interface SessionUser {
   branches: BranchSummary[];
   staffId: string | null;
   mustChangePassword: boolean;
+  /** A platform administrator working inside this salon (support mode): every action is recorded under their name. */
+  support: { organizationName: string; expiresAt: string } | null;
   twoFactor: TwoFactorState;
   preferences: {
     staffCanViewCustomerPhone: boolean;
