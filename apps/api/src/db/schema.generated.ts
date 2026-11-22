@@ -227,6 +227,17 @@ export interface CustomerAccounts {
   totalDebits: Generated<Int8>;
 }
 
+export interface CustomerLinks {
+  appointmentId: string;
+  createdAt: Generated<Timestamp>;
+  customerId: string;
+  expiresAt: Generated<Timestamp>;
+  id: Generated<string>;
+  lastUsedAt: Timestamp | null;
+  organizationId: string;
+  tokenHash: string;
+}
+
 export interface CustomerNotificationPreferences {
   category: string;
   channel: string;
@@ -586,8 +597,8 @@ export interface Organizations {
   country: Generated<string>;
   createdAt: Generated<Timestamp>;
   currency: Generated<string>;
-  disabledFeatures: Generated<string[]>;
   currentPeriodEndsAt: Timestamp | null;
+  disabledFeatures: Generated<string[]>;
   email: string | null;
   id: Generated<string>;
   legalName: string | null;
@@ -618,6 +629,7 @@ export interface OrganizationSettings {
   invoicePrefix: Generated<string>;
   maxAdvanceBookingDays: Generated<number>;
   minBookingNoticeMinutes: Generated<number>;
+  notifyStaffOfBookings: Generated<boolean>;
   onlineBookingEnabled: Generated<boolean>;
   organizationId: string;
   outstandingReminderEnabled: Generated<boolean>;
@@ -634,7 +646,6 @@ export interface OrganizationSettings {
   slotIntervalMinutes: Generated<number>;
   staffCanViewCustomerPhone: Generated<boolean>;
   staffCanViewOwnPerformance: Generated<boolean>;
-  notifyStaffOfBookings: Generated<boolean>;
   twoFactorRequirement: Generated<string>;
   updatedAt: Generated<Timestamp>;
 }
@@ -901,6 +912,20 @@ export interface StaffLeaves {
   updatedAt: Generated<Timestamp>;
 }
 
+export interface StaffNotifications {
+  appointmentId: string | null;
+  body: string | null;
+  branchId: string;
+  createdAt: Generated<Timestamp>;
+  id: Generated<string>;
+  kind: string;
+  link: string | null;
+  organizationId: string;
+  readAt: Timestamp | null;
+  staffId: string;
+  title: string;
+}
+
 export interface StaffScheduleOverrides {
   createdAt: Generated<Timestamp>;
   createdBy: string | null;
@@ -987,20 +1012,6 @@ export interface Users {
   updatedAt: Generated<Timestamp>;
 }
 
-export interface StaffNotifications {
-  appointmentId: string | null;
-  body: string | null;
-  branchId: string;
-  createdAt: Generated<Timestamp>;
-  id: Generated<string>;
-  kind: string;
-  link: string | null;
-  organizationId: string;
-  readAt: Timestamp | null;
-  staffId: string;
-  title: string;
-}
-
 export interface DB {
   appointmentChangeRequests: AppointmentChangeRequests;
   appointmentEvents: AppointmentEvents;
@@ -1014,6 +1025,7 @@ export interface DB {
   campaigns: Campaigns;
   consentEvents: ConsentEvents;
   customerAccounts: CustomerAccounts;
+  customerLinks: CustomerLinks;
   customerNotificationPreferences: CustomerNotificationPreferences;
   customerPackageItems: CustomerPackageItems;
   customerPackages: CustomerPackages;

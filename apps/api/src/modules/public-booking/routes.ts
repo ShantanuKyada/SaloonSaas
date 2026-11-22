@@ -1,9 +1,8 @@
-import { availabilityQuery, publicBookingSchema, zDateTime } from '@salon/shared';
+import { availabilityQuery, publicBookingSchema, rebookSchema, zDateTime, type AppointmentStatus } from '@salon/shared';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
-import { env, scaledLimit } from '../../config/env.js';
+import { scaledLimit } from '../../config/env.js';
 import { systemContext, type AuthContext } from '../../core/auth-context.js';
-import { randomToken, sha256 } from '../../core/crypto.js';
 import { AppError } from '../../core/errors.js';
 import { createRouter } from '../../core/router.js';
 import { addDays, localDateOf } from '../../core/time.js';
@@ -16,6 +15,7 @@ import { addEvent, changeStatus, lockAppointment, moveAppointment } from '../app
 import { loadAppointmentDtos } from '../appointments/dto.js';
 import { createAppointment } from '../appointments/service.js';
 import { computeDayAvailability } from '../scheduling/routes.js';
+import { createCustomerLink, resolveLink } from '../customer-portal/links.js';
 
 // Public, unauthenticated booking for a salon's own website or a "Book now" link. Off unless the owner enables it.
 // Everything is validated server-side with the same rules as the front desk; the customer manages their booking
@@ -101,14 +101,50 @@ r.get('/:code/next-available', { summary: 'The next day with a free time after a
   });
 });
 
-async function bookingByToken(tx: Tx, token: string) {
-  const row = await tx
-    .selectFrom('appointments')
-    .select(['id', 'organizationId', 'branchId', 'status', 'version', 'startAt'])
-    .where('manageTokenHash', '=', sha256(token))
+const NOT_FOUND = 'We could not find this booking. The link may be incorrect.';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const OPEN_STATUSES: readonly string[] = ['scheduled', 'confirmed'];
+const CHANGE_CUTOFF_MS = 2 * 3600_000;
+/** Customers can move or cancel online until two hours before the start. */
+const changeable = (status: string, startAt: Date | string | null) => OPEN_STATUSES.includes(status) && (startAt ? new Date(startAt).getTime() : 0) > Date.now() + CHANGE_CUTOFF_MS;
+
+/** What a customer holding a link can do at this salon right now. */
+async function salonState(tx: Tx, orgId: string) {
+  const o = await tx
+    .selectFrom('organizations as o')
+    .innerJoin('organizationSettings as s', 's.organizationId', 'o.id')
+    .select(['o.id', 'o.name', 'o.code', 'o.currency', 'o.status', 'o.disabledFeatures', 's.onlineBookingEnabled'])
+    .where('o.id', '=', orgId)
     .executeTakeFirst();
-  if (!row) throw new AppError(404, 'NOT_FOUND', 'We could not find this booking. The link may be incorrect.');
-  return row;
+  if (!o || o.status === 'archived') throw new AppError(404, 'NOT_FOUND', NOT_FOUND);
+  return {
+    name: o.name,
+    code: String(o.code),
+    currency: o.currency,
+    /** Times can be chosen online (needed to move a booking or book again). */
+    onlineOpen: o.status === 'active' && o.onlineBookingEnabled && !o.disabledFeatures.includes('online_booking'),
+    /** Customer self-service: the customer's other visits and "Book again". */
+    selfService: !o.disabledFeatures.includes('customer_portal'),
+  };
+}
+
+/** The booking behind a private link or, with self-service, another booking of the same customer. */
+async function bookingFor(token: string, appointmentId?: string) {
+  return withSystem(async (tx) => {
+    const link = await resolveLink(tx, token);
+    const salon = await salonState(tx, link.orgId);
+    const id = appointmentId ?? link.appointmentId;
+    if (!UUID.test(id)) throw new AppError(404, 'NOT_FOUND', NOT_FOUND);
+    if (id !== link.appointmentId && !salon.selfService) throw new AppError(403, 'FEATURE_OFF', 'Please call the salon to manage your other bookings.');
+    const booking = await tx
+      .selectFrom('appointments')
+      .select(['id', 'branchId', 'status', 'version', 'startAt', 'customerId'])
+      .where('organizationId', '=', link.orgId)
+      .where('id', '=', id)
+      .executeTakeFirst();
+    if (!booking || booking.customerId !== link.customerId) throw new AppError(404, 'NOT_FOUND', NOT_FOUND);
+    return { link, salon, booking };
+  });
 }
 
 function view(dto: Awaited<ReturnType<typeof loadAppointmentDtos>>[number], extras: { salonName: string; salonCode: string; branchPhone: string | null; timezone: string; canChange: boolean }) {
@@ -131,16 +167,48 @@ function view(dto: Awaited<ReturnType<typeof loadAppointmentDtos>>[number], extr
   };
 }
 
+/**
+ * Books a customer online at one branch: the chosen person, or whoever is free at that time, does the services back to
+ * back. Same rules as the booking page (online-bookable services and people, the salon's hours and booking window).
+ */
+async function placeOnlineBooking(t: Tx, ctx: AuthContext, orgId: string, branch: { id: string; timezone: string }, input: { serviceIds: string[]; staffId?: string | null; startAt: string; notes?: string | null; customerId: string }): Promise<string> {
+  const day = input.startAt;
+  const availability = await computeDayAvailability(t, orgId, { branchId: branch.id, date: localDateOf(new Date(day), branch.timezone), serviceIds: input.serviceIds, startAt: day, staffId: input.staffId ?? undefined }, { onlineOnly: true });
+  const candidate = availability.staff.find((s) => s.state === 'available' && s.slots.includes(new Date(day).toISOString()));
+  if (!candidate) throw new AppError(409, 'APPOINTMENT_CONFLICT', 'Sorry, that time was just taken. Please choose another time.');
+
+  const services = await loadServices(t, orgId, { ids: input.serviceIds, branchId: branch.id });
+  const ordered = input.serviceIds.map((id) => services.find((s) => s.id === id)!);
+  let cursor = new Date(day).getTime();
+  const items = ordered.map((s) => {
+    const item = { serviceId: s.id, staffId: candidate.staffId, startAt: new Date(cursor).toISOString() };
+    cursor += (s.durationMinutes + s.bufferMinutes) * 60_000;
+    return item;
+  });
+  return createAppointment(t, ctx, { branchId: branch.id, customerId: input.customerId, source: 'online', status: 'scheduled', notes: input.notes ?? null, internalNotes: null, items, notifyCustomer: true, allowOutsideHours: false });
+}
+
+async function bookableBranch(t: Tx, orgId: string, branchId: string) {
+  const branch = await t.selectFrom('branches').select(['id', 'status', 'phone', 'timezone']).where('organizationId', '=', orgId).where('id', '=', branchId).executeTakeFirst();
+  if (!branch || branch.status !== 'active') throw new AppError(404, 'NOT_FOUND', 'This branch is not available for online booking.');
+  return branch;
+}
+
+/** The new booking as the customer sees it, with whether a confirmation message really went out. */
+async function bookedView(t: Tx, ctx: AuthContext, orgId: string, salon: { name: string; code: string }, branch: { phone: string | null; timezone: string }, id: string, manageLink: string) {
+  const [dto] = await loadAppointmentDtos(t, ctx, orgId, [id], await loadSettings(t, orgId));
+  // Only promise a confirmation message when one was really queued (none is when the salon has no messaging set up).
+  const confirmation = await t.selectFrom('notifications').select('channel').where('organizationId', '=', orgId).where('sourceId', '=', id).where('eventType', '=', 'appointment_confirmation').executeTakeFirst();
+  return { ...view(dto!, { salonName: salon.name, salonCode: salon.code, branchPhone: branch.phone, timezone: branch.timezone, canChange: true }), confirmationSent: !!confirmation, manageLink };
+}
+
 r.post('/:code/bookings', { summary: 'Book online', auth: 'public', body: publicBookingSchema, middleware: [bookingLimiter] }, async ({ params, body, auth }) => {
   const org = await salonByCode(params.code!);
   if (body.website) throw new AppError(400, 'BAD_REQUEST', 'Something went wrong. Please try again.'); // honeypot
-  const token = randomToken(32);
-  const result = await withTenant({ orgId: org.id }, async (t) => {
+  return withTenant({ orgId: org.id }, async (t) => {
     const ctx = publicContext(org.id, body.branchId, auth.ip);
     const orgCtx = await loadOrg(t, org.id);
-    const settings = await loadSettings(t, org.id);
-    const branch = await t.selectFrom('branches').select(['id', 'status', 'phone', 'timezone']).where('organizationId', '=', org.id).where('id', '=', body.branchId).executeTakeFirst();
-    if (!branch || branch.status !== 'active') throw new AppError(404, 'NOT_FOUND', 'This branch is not available for online booking.');
+    const branch = await bookableBranch(t, org.id, body.branchId);
 
     const mobile = normalizePhoneOrThrow(body.customer.mobile, orgCtx.callingCode, 'customer.mobile');
     const existing = await findCustomerByMobile(t, org.id, mobile);
@@ -148,64 +216,158 @@ r.post('/:code/bookings', { summary: 'Book online', auth: 'public', body: public
       existing?.id ??
       (await createCustomerRecord(t, ctx, orgCtx, { fullName: body.customer.fullName, mobile: body.customer.mobile, email: body.customer.email ?? undefined, marketingConsent: body.customer.marketingConsent, source: 'online', preferredBranchId: body.branchId }, { registeredBranchId: body.branchId, consentSource: 'online_form' }));
 
-    // Services are performed back to back by the chosen person, or by whoever is free at the requested time.
-    const day = body.startAt;
-    const availability = await computeDayAvailability(t, org.id, { branchId: body.branchId, date: localDateOf(new Date(day), branch.timezone), serviceIds: body.serviceIds, startAt: day, staffId: body.staffId ?? undefined }, { onlineOnly: true });
-    const candidate = availability.staff.find((s) => s.state === 'available' && s.slots.includes(new Date(day).toISOString()));
-    if (!candidate) throw new AppError(409, 'APPOINTMENT_CONFLICT', 'Sorry, that time was just taken. Please choose another time.');
-
-    const services = await loadServices(t, org.id, { ids: body.serviceIds, branchId: body.branchId });
-    const ordered = body.serviceIds.map((id) => services.find((s) => s.id === id)!);
-    let cursor = new Date(day).getTime();
-    const items = ordered.map((s) => {
-      const item = { serviceId: s.id, staffId: candidate.staffId, startAt: new Date(cursor).toISOString() };
-      cursor += (s.durationMinutes + s.bufferMinutes) * 60_000;
-      return item;
-    });
-    const id = await createAppointment(t, ctx, { branchId: body.branchId, customerId, source: 'online', status: 'scheduled', notes: body.notes ?? null, internalNotes: null, items, notifyCustomer: true, allowOutsideHours: false });
-    await t.updateTable('appointments').set({ manageTokenHash: sha256(token) }).where('id', '=', id).execute();
-    const [dto] = await loadAppointmentDtos(t, ctx, org.id, [id], settings);
-    // Only promise a confirmation message when one was really queued (none is when the salon has no messaging set up).
-    const confirmation = await t.selectFrom('notifications').select('channel').where('organizationId', '=', org.id).where('sourceId', '=', id).where('eventType', '=', 'appointment_confirmation').executeTakeFirst();
-    return { ...view(dto!, { salonName: org.name, salonCode: params.code!.toLowerCase(), branchPhone: branch.phone, timezone: branch.timezone, canChange: true }), confirmationSent: !!confirmation };
+    const id = await placeOnlineBooking(t, ctx, org.id, branch, { serviceIds: body.serviceIds, staffId: body.staffId, startAt: body.startAt, notes: body.notes, customerId });
+    const manageLink = await createCustomerLink(t, org.id, id, customerId);
+    return bookedView(t, ctx, org.id, { name: org.name, code: params.code!.toLowerCase() }, branch, id, manageLink);
   });
-  return { ...result, manageLink: `${env.APP_BASE_URL}/book/manage/${token}` };
 });
 
 r.get('/manage/:token', { summary: 'See a booking from its private link', auth: 'public', middleware: [limiter] }, async ({ params, auth }) => {
-  const peek = await withSystem((tx) => bookingByToken(tx, params.token!));
-  return withTenant({ orgId: peek.organizationId }, async (t) => {
-    const ctx = publicContext(peek.organizationId, peek.branchId, auth.ip);
-    const [dto] = await loadAppointmentDtos(t, ctx, peek.organizationId, [peek.id], await loadSettings(t, peek.organizationId));
-    const org = await t.selectFrom('organizations').select(['name', 'code']).where('id', '=', peek.organizationId).executeTakeFirstOrThrow();
-    const branch = await t.selectFrom('branches').select(['phone', 'timezone']).where('id', '=', peek.branchId).executeTakeFirstOrThrow();
-    return view(dto!, { salonName: org.name, salonCode: org.code, branchPhone: branch.phone, timezone: branch.timezone, canChange: ['scheduled', 'confirmed'].includes(peek.status) && (peek.startAt?.getTime() ?? 0) > Date.now() + 2 * 3600_000 });
+  const { link, salon, booking } = await bookingFor(params.token!);
+  return withTenant({ orgId: link.orgId }, async (t) => {
+    const ctx = publicContext(link.orgId, booking.branchId, auth.ip);
+    const [dto] = await loadAppointmentDtos(t, ctx, link.orgId, [booking.id], await loadSettings(t, link.orgId));
+    const branch = await t.selectFrom('branches').select(['phone', 'timezone']).where('id', '=', booking.branchId).executeTakeFirstOrThrow();
+    return {
+      ...view(dto!, { salonName: salon.name, salonCode: salon.code, branchPhone: branch.phone, timezone: branch.timezone, canChange: changeable(booking.status, booking.startAt) }),
+      canMove: salon.onlineOpen,
+      selfService: salon.selfService,
+    };
   });
 });
 
-r.post('/manage/:token/cancel', { summary: 'Cancel from the private link (up to 2 hours before)', auth: 'public', status: 200, middleware: [limiter] }, async ({ params, auth }) => {
-  const peek = await withSystem((tx) => bookingByToken(tx, params.token!));
-  if (!['scheduled', 'confirmed'].includes(peek.status)) throw new AppError(409, 'INVALID_STATUS_TRANSITION', 'This booking can no longer be cancelled online. Please call the salon.');
-  if ((peek.startAt?.getTime() ?? 0) < Date.now() + 2 * 3600_000) throw new AppError(409, 'CONFLICT', 'It is too close to the appointment time to cancel online. Please call the salon.');
-  await withTenant({ orgId: peek.organizationId }, async (t) => {
-    const ctx = { ...publicContext(peek.organizationId, peek.branchId, auth.ip), permissions: new Set(['appointments.cancel' as const, 'appointments.status' as const]) };
-    await changeStatus(t, ctx, peek.id, { status: 'cancelled', reason: 'Cancelled by customer (online)', notifyCustomer: true });
+// ───────────── Customer self-service: the customer's visits, from any of their private links ─────────────
+
+const UPCOMING: AppointmentStatus[] = ['scheduled', 'confirmed', 'checked_in', 'in_service'];
+const VISITS_SHOWN = 20;
+
+r.get('/manage/:token/visits', { summary: "The customer's visits: coming up, before, and what to book again", auth: 'public', middleware: [limiter] }, async ({ params, auth }) => {
+  const { link, salon } = await bookingFor(params.token!);
+  if (!salon.selfService) throw new AppError(403, 'FEATURE_OFF', 'Customer self-service is not available for this salon.');
+  const orgId = link.orgId;
+  return withTenant({ orgId }, async (t) => {
+    const branches = await t.selectFrom('branches').select(['id', 'name', 'status', 'phone', 'timezone']).where('organizationId', '=', orgId).execute();
+    const ctx: AuthContext = { ...systemContext(orgId, 'customer-portal'), branchIds: branches.map((b) => b.id), ip: auth.ip };
+    const now = new Date();
+    const recent = new Date(now.getTime() - 12 * 3600_000); // today's visit stays under "coming up" while it happens
+    const mine = t.selectFrom('appointments').select('id').where('organizationId', '=', orgId).where('customerId', '=', link.customerId).where('startAt', 'is not', null);
+    const [upcomingRows, pastRows, customer] = await Promise.all([
+      mine.where('status', 'in', UPCOMING).where('startAt', '>=', recent).orderBy('startAt', 'asc').limit(VISITS_SHOWN).execute(),
+      mine
+        .where((eb) => eb.or([eb('status', 'in', ['completed', 'no_show']), eb.and([eb('status', '=', 'cancelled'), eb('startAt', '<', now)])]))
+        .orderBy('startAt', 'desc')
+        .limit(VISITS_SHOWN)
+        .execute(),
+      t.selectFrom('customers').select('fullName').where('id', '=', link.customerId).executeTakeFirstOrThrow(),
+    ]);
+    const dtos = await loadAppointmentDtos(t, ctx, orgId, [...upcomingRows, ...pastRows].map((x) => x.id), await loadSettings(t, orgId));
+    const byId = new Map(dtos.map((d) => [d.id, d]));
+
+    // "Book again" only where it will work: services still bookable online at that branch, and the same person if they
+    // still take online bookings.
+    const bookable = new Map<string, Set<string>>();
+    let people = new Set<string>();
+    if (salon.onlineOpen) {
+      for (const b of branches.filter((x) => x.status === 'active')) {
+        bookable.set(b.id, new Set((await loadServices(t, orgId, { branchId: b.id })).filter((s) => s.onlineBookable && s.status === 'active').map((s) => s.id)));
+      }
+      const staff = await t.selectFrom('staff').select('id').where('organizationId', '=', orgId).where('employmentStatus', 'in', ['active', 'on_notice']).where('isBookable', '=', true).where('onlineBookable', '=', true).execute();
+      people = new Set(staff.map((x) => x.id));
+    }
+
+    const toVisit = (d: (typeof dtos)[number], past: boolean) => {
+      const branch = branches.find((b) => b.id === d.branchId);
+      const serviceIds = [...new Set(d.items.map((i) => i.serviceId))];
+      const staffIds = [...new Set(d.items.map((i) => i.staffId).filter((x): x is string => !!x))];
+      const can = bookable.get(d.branchId);
+      const person = staffIds.length === 1 && people.has(staffIds[0]!) ? staffIds[0]! : null;
+      return {
+        id: d.id,
+        bookingNumber: d.bookingNumber,
+        status: d.status,
+        startAt: d.startAt,
+        branchId: d.branchId,
+        branchName: d.branchName,
+        branchPhone: branch?.phone ?? null,
+        timezone: branch?.timezone ?? 'Asia/Kolkata',
+        services: d.items.map((i) => ({ serviceId: i.serviceId, name: i.serviceName, staffName: i.staffName, durationMinutes: i.durationMinutes })),
+        total: d.estimatedAmount,
+        isThis: d.id === link.appointmentId,
+        canChange: !past && changeable(d.status, d.startAt),
+        rebook: past && can && serviceIds.length <= 5 && serviceIds.every((id) => can.has(id)) ? { branchId: d.branchId, serviceIds, staffId: person, staffName: person ? d.items.find((i) => i.staffId === person)?.staffName ?? null : null } : null,
+      };
+    };
+    const upcoming = upcomingRows.map((x) => byId.get(x.id)).filter((d) => !!d).map((d) => toVisit(d, false));
+    const past = pastRows.map((x) => byId.get(x.id)).filter((d) => !!d).map((d) => toVisit(d, true));
+
+    // Their usual: the same services at the same branch, done at least twice (the most often, then the most recent),
+    // with the person who did them most often.
+    const groups = new Map<string, typeof past>();
+    for (const v of past) {
+      if (v.status !== 'completed' || !v.rebook) continue;
+      const key = `${v.branchId}|${[...v.rebook.serviceIds].sort().join(',')}`;
+      groups.set(key, [...(groups.get(key) ?? []), v]);
+    }
+    const favourite = [...groups.values()].filter((g) => g.length >= 2).sort((a, b) => b.length - a.length)[0];
+    let usual = null;
+    if (favourite) {
+      const counts = new Map<string, { n: number; name: string | null }>();
+      for (const v of favourite) if (v.rebook!.staffId) counts.set(v.rebook!.staffId, { n: (counts.get(v.rebook!.staffId)?.n ?? 0) + 1, name: v.rebook!.staffName });
+      const top = [...counts.entries()].sort((a, b) => b[1].n - a[1].n)[0];
+      const latest = favourite[0]!;
+      usual = { ...latest.rebook!, staffId: top?.[0] ?? null, staffName: top?.[1].name ?? null, services: latest.services.map((s) => s.name), branchName: latest.branchName, timezone: latest.timezone, times: favourite.length };
+    }
+
+    return { customerName: customer.fullName, salonName: salon.name, salonCode: salon.code, currency: salon.currency, canBook: salon.onlineOpen, upcoming, past, usual };
+  });
+});
+
+r.post('/manage/:token/book', { summary: 'Book again from the private link', auth: 'public', body: rebookSchema, middleware: [bookingLimiter] }, async ({ params, body, auth }) => {
+  const { link, salon } = await bookingFor(params.token!);
+  if (!salon.selfService) throw new AppError(403, 'FEATURE_OFF', 'Customer self-service is not available for this salon.');
+  if (!salon.onlineOpen) throw new AppError(409, 'CONFLICT', 'Online booking is closed at the moment. Please call the salon to book.');
+  return withTenant({ orgId: link.orgId }, async (t) => {
+    const ctx = publicContext(link.orgId, body.branchId, auth.ip);
+    const branch = await bookableBranch(t, link.orgId, body.branchId);
+    const id = await placeOnlineBooking(t, ctx, link.orgId, branch, { ...body, customerId: link.customerId });
+    await addEvent(t, ctx, link.orgId, id, 'note', { by: 'customer', via: 'book again' });
+    const manageLink = await createCustomerLink(t, link.orgId, id, link.customerId);
+    return bookedView(t, ctx, link.orgId, salon, branch, id, manageLink);
+  });
+});
+
+// ───────────── Cancel or move: the link's own booking, or (self-service) another of the customer's bookings ─────────────
+
+async function cancelOnline(token: string, appointmentId: string | undefined, ip: string | null) {
+  const { link, booking } = await bookingFor(token, appointmentId);
+  if (!OPEN_STATUSES.includes(booking.status)) throw new AppError(409, 'INVALID_STATUS_TRANSITION', 'This booking can no longer be cancelled online. Please call the salon.');
+  if (!changeable(booking.status, booking.startAt)) throw new AppError(409, 'CONFLICT', 'It is too close to the appointment time to cancel online. Please call the salon.');
+  await withTenant({ orgId: link.orgId }, async (t) => {
+    const ctx = { ...publicContext(link.orgId, booking.branchId, ip), permissions: new Set(['appointments.cancel' as const, 'appointments.status' as const]) };
+    await changeStatus(t, ctx, booking.id, { status: 'cancelled', reason: 'Cancelled by customer (online)', notifyCustomer: true });
   });
   return { cancelled: true };
-});
+}
 
-r.post('/manage/:token/reschedule', { summary: 'Move to another valid time from the private link', auth: 'public', body: z.object({ startAt: zDateTime }), status: 200, middleware: [limiter] }, async ({ params, body, auth }) => {
-  const peek = await withSystem((tx) => bookingByToken(tx, params.token!));
-  if (!['scheduled', 'confirmed'].includes(peek.status)) throw new AppError(409, 'INVALID_STATUS_TRANSITION', 'This booking can no longer be changed online. Please call the salon.');
-  if ((peek.startAt?.getTime() ?? 0) < Date.now() + 2 * 3600_000) throw new AppError(409, 'CONFLICT', 'It is too close to the appointment time to change online. Please call the salon.');
-  return withTenant({ orgId: peek.organizationId }, async (t) => {
-    const ctx = { ...publicContext(peek.organizationId, peek.branchId, auth.ip), permissions: new Set(['appointments.update' as const]) };
-    const a = await lockAppointment(t, ctx, peek.organizationId, peek.id);
-    const first = await t.selectFrom('appointmentItems').select('id').where('appointmentId', '=', peek.id).orderBy('sortOrder').executeTakeFirstOrThrow();
-    await moveAppointment(t, ctx, peek.id, { version: a.version, itemId: first.id, startAt: body.startAt, notifyCustomer: true, allowOutsideHours: false });
-    await addEvent(t, ctx, peek.organizationId, peek.id, 'note', { by: 'customer', via: 'online link' });
+async function moveOnline(token: string, appointmentId: string | undefined, startAt: string, ip: string | null) {
+  const { link, salon, booking } = await bookingFor(token, appointmentId);
+  if (!OPEN_STATUSES.includes(booking.status)) throw new AppError(409, 'INVALID_STATUS_TRANSITION', 'This booking can no longer be changed online. Please call the salon.');
+  if (!changeable(booking.status, booking.startAt)) throw new AppError(409, 'CONFLICT', 'It is too close to the appointment time to change online. Please call the salon.');
+  if (!salon.onlineOpen) throw new AppError(409, 'CONFLICT', 'Times cannot be changed online at the moment. Please call the salon.');
+  return withTenant({ orgId: link.orgId }, async (t) => {
+    const ctx = { ...publicContext(link.orgId, booking.branchId, ip), permissions: new Set(['appointments.update' as const]) };
+    const a = await lockAppointment(t, ctx, link.orgId, booking.id);
+    const first = await t.selectFrom('appointmentItems').select('id').where('appointmentId', '=', booking.id).orderBy('sortOrder').executeTakeFirstOrThrow();
+    await moveAppointment(t, ctx, booking.id, { version: a.version, itemId: first.id, startAt, notifyCustomer: true, allowOutsideHours: false });
+    await addEvent(t, ctx, link.orgId, booking.id, 'note', { by: 'customer', via: 'online link' });
     return { rescheduled: true };
   });
-});
+}
+
+const moveBody = z.object({ startAt: zDateTime });
+r.post('/manage/:token/cancel', { summary: 'Cancel from the private link (up to 2 hours before)', auth: 'public', status: 200, middleware: [limiter] }, async ({ params, auth }) => cancelOnline(params.token!, undefined, auth.ip));
+r.post('/manage/:token/reschedule', { summary: 'Move to another valid time from the private link', auth: 'public', body: moveBody, status: 200, middleware: [limiter] }, async ({ params, body, auth }) => moveOnline(params.token!, undefined, body.startAt, auth.ip));
+r.post('/manage/:token/visits/:id/cancel', { summary: 'Cancel another of the customer’s bookings (self-service)', auth: 'public', status: 200, middleware: [limiter] }, async ({ params, auth }) => cancelOnline(params.token!, params.id!, auth.ip));
+r.post('/manage/:token/visits/:id/reschedule', { summary: 'Move another of the customer’s bookings (self-service)', auth: 'public', body: moveBody, status: 200, middleware: [limiter] }, async ({ params, body, auth }) => moveOnline(params.token!, params.id!, body.startAt, auth.ip));
 
 export const publicBookingRoutes = r;

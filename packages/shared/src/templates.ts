@@ -5,9 +5,9 @@ import type { NotificationChannel, NotificationEventType } from './constants.js'
 
 export const TEMPLATE_VARIABLES: Record<NotificationEventType, string[]> = {
   appointment_confirmation: ['customerName', 'salonName', 'branchName', 'services', 'date', 'time', 'staff', 'bookingNumber', 'branchPhone', 'manageLink'],
-  appointment_reminder: ['customerName', 'salonName', 'branchName', 'services', 'date', 'time', 'staff', 'bookingNumber', 'branchPhone'],
+  appointment_reminder: ['customerName', 'salonName', 'branchName', 'services', 'date', 'time', 'staff', 'bookingNumber', 'branchPhone', 'manageLink'],
   appointment_cancellation: ['customerName', 'salonName', 'branchName', 'services', 'date', 'time', 'bookingNumber', 'branchPhone'],
-  appointment_rescheduled: ['customerName', 'salonName', 'branchName', 'services', 'date', 'time', 'staff', 'bookingNumber', 'branchPhone'],
+  appointment_rescheduled: ['customerName', 'salonName', 'branchName', 'services', 'date', 'time', 'staff', 'bookingNumber', 'branchPhone', 'manageLink'],
   payment_receipt: ['customerName', 'salonName', 'branchName', 'amount', 'receiptNumber', 'method', 'date', 'balance'],
   outstanding_reminder: ['customerName', 'salonName', 'branchName', 'amount', 'branchPhone'],
   offer: ['customerName', 'salonName', 'message'],
@@ -35,7 +35,7 @@ const whatsappAndSms: Array<[NotificationEventType, string, string]> = [
   [
     'appointment_confirmation',
     'Booking confirmation',
-    'Hi {{customerName}}, your appointment at {{salonName}} ({{branchName}}) is confirmed.\nService: {{services}}\nDate: {{date}}\nTime: {{time}}\nWith: {{staff}}\nBooking no: {{bookingNumber}}',
+    'Hi {{customerName}}, your appointment at {{salonName}} ({{branchName}}) is confirmed.\nService: {{services}}\nDate: {{date}}\nTime: {{time}}\nWith: {{staff}}\nBooking no: {{bookingNumber}}\nSee, change or book again: {{manageLink}}',
   ],
   [
     'appointment_reminder',
@@ -50,7 +50,7 @@ const whatsappAndSms: Array<[NotificationEventType, string, string]> = [
   [
     'appointment_rescheduled',
     'Booking moved',
-    'Hi {{customerName}}, your appointment at {{salonName}} ({{branchName}}) has moved to {{date}} at {{time}} with {{staff}}. Booking no: {{bookingNumber}}',
+    'Hi {{customerName}}, your appointment at {{salonName}} ({{branchName}}) has moved to {{date}} at {{time}} with {{staff}}. Booking no: {{bookingNumber}}\nSee or change it: {{manageLink}}',
   ],
   [
     'payment_receipt',

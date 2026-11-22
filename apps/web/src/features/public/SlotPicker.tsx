@@ -10,11 +10,11 @@ interface Availability { date: string; timezone: string; beyondBookingWindowDays
 const SHORT = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /** Pick a day from a strip, then a start time. Only times that can really be booked are ever shown. */
-export function SlotPicker({ code, branchId, serviceIds, timezone, value, onChange }: { code: string; branchId: string; serviceIds: string[]; timezone: string; value: { startAt: string; staffId: string | null } | null; onChange: (v: { startAt: string; staffId: string | null } | null) => void }) {
+export function SlotPicker({ code, branchId, serviceIds, timezone, value, onChange, prefer }: { code: string; branchId: string; serviceIds: string[]; timezone: string; value: { startAt: string; staffId: string | null } | null; onChange: (v: { startAt: string; staffId: string | null } | null) => void; /** Start with this person (book again with the same stylist); "Anyone" stays one tap away. */ prefer?: { staffId: string; name: string | null } | null }) {
   const today = todayIn(timezone);
   const [start, setStart] = useState(today);
   const [date, setDate] = useState(today);
-  const [staffId, setStaffId] = useState<string>('');
+  const [staffId, setStaffId] = useState<string>(prefer?.staffId ?? '');
   const days = Array.from({ length: 7 }, (_, i) => addDaysTo(start, i));
   const q = useQuery({
     queryKey: ['public', 'availability', code, branchId, date, serviceIds.join(',')],
@@ -22,7 +22,9 @@ export function SlotPicker({ code, branchId, serviceIds, timezone, value, onChan
     enabled: serviceIds.length > 0,
   });
   useEffect(() => { onChange(null); }, [date, staffId]);
-  const staff = q.data?.staff ?? [];
+  const free = q.data?.staff ?? [];
+  // The preferred person stays on the list on days they are not free, so the customer sees why and can look ahead.
+  const staff = prefer && !free.some((s) => s.staffId === prefer.staffId) ? [{ staffId: prefer.staffId, displayName: prefer.name ?? 'Same person as before', slots: [] as string[] }, ...free] : free;
   const slots = staffId ? staff.find((s) => s.staffId === staffId)?.slots ?? [] : (q.data?.slots ?? []).map((s) => s.startAt);
   // A full (or closed) day: look ahead for the next day with a free time, so the customer does not tap day after day.
   const dayIsFull = !!q.data && slots.length === 0 && !q.data.beyondBookingWindowDays;
@@ -48,7 +50,7 @@ export function SlotPicker({ code, branchId, serviceIds, timezone, value, onChan
           {days.map((d) => { const on = d === date; return <button key={d} type="button" aria-pressed={on} disabled={d < today} onClick={() => setDate(d)} className={cn('flex flex-col items-center rounded-xl border py-2 text-sm disabled:opacity-40 max-md:min-h-14', on ? 'border-primary bg-primary text-primary-fg' : 'border-line bg-surface hover:border-primary/50')}><span className="text-[11px] uppercase opacity-80">{SHORT[weekdayOf(d)]}</span><span className="text-base font-semibold">{Number(d.slice(8))}</span></button>; })}
         </div>
       </div>
-      {staff.length > 1 && (
+      {(staff.length > 1 || !!prefer) && (
         <div role="group" aria-label="Who would you like?" className="flex flex-wrap gap-2">
           <button type="button" aria-pressed={staffId === ''} onClick={() => setStaffId('')} className={cn('rounded-full border px-3 py-1.5 text-sm max-md:min-h-10', staffId === '' ? 'border-primary bg-primary-soft text-primary-soft-fg' : 'border-line')}>Anyone</button>
           {staff.map((s) => <button key={s.staffId} type="button" aria-pressed={staffId === s.staffId} onClick={() => setStaffId(s.staffId)} className={cn('rounded-full border px-3 py-1.5 text-sm max-md:min-h-10', staffId === s.staffId ? 'border-primary bg-primary-soft text-primary-soft-fg' : 'border-line')}>{s.displayName}</button>)}
@@ -58,14 +60,14 @@ export function SlotPicker({ code, branchId, serviceIds, timezone, value, onChan
       {q.isError && <p role="alert" className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">We could not load times just now. Please try again.</p>}
       {q.data && slots.length === 0 && (
         <div className="rounded-xl border border-dashed border-line p-4 text-center text-sm text-muted">
-          <p>{q.data.beyondBookingWindowDays ? `You can book up to ${q.data.beyondBookingWindowDays} days ahead. Please choose an earlier day.` : 'No times are free on this day.'}</p>
+          <p>{q.data.beyondBookingWindowDays ? `You can book up to ${q.data.beyondBookingWindowDays} days ahead. Please choose an earlier day.` : staffId ? `${staff.find((s) => s.staffId === staffId)?.displayName ?? 'They'} has no free time on this day.` : 'No times are free on this day.'}</p>
           {dayIsFull && nextFree.isLoading && <p className="mt-2" role="status">Finding the next free day…</p>}
           {dayIsFull && nextFree.data && (
             <button type="button" onClick={() => goTo(nextFree.data!.date)} className="mt-3 inline-flex min-h-11 items-center rounded-xl bg-primary px-4 text-sm font-semibold text-primary-fg">
               Next free day: {fmtDay(nextFree.data.date, timezone)}, from {fmtTime(nextFree.data.first, timezone)}
             </button>
           )}
-          {dayIsFull && nextFree.data === null && <p className="mt-2">Nothing is free in the next three weeks. Please call the salon.</p>}
+          {dayIsFull && nextFree.data === null && <p className="mt-2">{staffId ? 'Nothing is free with them in the next three weeks. Choose “Anyone”, or call the salon.' : 'Nothing is free in the next three weeks. Please call the salon.'}</p>}
         </div>
       )}
       {slots.length > 0 && (
