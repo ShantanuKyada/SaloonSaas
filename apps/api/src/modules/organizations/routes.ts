@@ -24,10 +24,11 @@ platform.get('/overview', { summary: 'Platform-wide tenant counts', auth: 'platf
       .selectNoFrom([
         sql<number>`(select count(*) from organizations where status = 'active')`.as('activeOrganizations'),
         sql<number>`(select count(*) from organizations where status = 'suspended')`.as('suspendedOrganizations'),
-        sql<number>`(select count(*) from branches where status = 'active')`.as('activeBranches'),
-        sql<number>`(select count(*) from users where status = 'active' and organization_id is not null)`.as('activeUsers'),
-        sql<number>`(select count(*) from customers where status <> 'archived')`.as('customers'),
-        sql<number>`(select count(*) from appointments where created_at > now() - interval '30 days')`.as('appointmentsLast30Days'),
+        // Totals for salons still with us (active or suspended); archived salons' data no longer counts.
+        sql<number>`(select count(*) from branches where status = 'active' and organization_id in (select id from organizations where status <> 'archived'))`.as('activeBranches'),
+        sql<number>`(select count(*) from users where status = 'active' and organization_id in (select id from organizations where status <> 'archived'))`.as('activeUsers'),
+        sql<number>`(select count(*) from customers where status <> 'archived' and organization_id in (select id from organizations where status <> 'archived'))`.as('customers'),
+        sql<number>`(select count(*) from appointments where created_at > now() - interval '30 days' and organization_id in (select id from organizations where status <> 'archived'))`.as('appointmentsLast30Days'),
       ])
       .executeTakeFirstOrThrow();
     return row;
@@ -64,6 +65,8 @@ platform.get(
           (eb) =>
             eb.selectFrom('appointments').select(eb.fn.max('createdAt').as('m')).whereRef('organizationId', '=', 'o.id').as('lastActivityAt'),
         ])
+        // Active salons first, then suspended, then archived; newest first within each.
+        .orderBy(sql`case o.status when 'active' then 0 when 'suspended' then 1 else 2 end`)
         .orderBy('o.createdAt', 'desc')
         .limit(query.pageSize)
         .offset((query.page - 1) * query.pageSize)

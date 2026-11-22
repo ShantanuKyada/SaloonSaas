@@ -70,18 +70,31 @@ function oneTabAtATime<T>(task: () => Promise<T>): Promise<T> {
   return locks ? (locks.request(RENEWAL_LOCK, task) as unknown as Promise<T>) : task();
 }
 
+// A server that is restarting (a deploy) or a dropped connection is not the same as "your session is over": those
+// renewals are tried again a few times before anyone is sent back to the sign-in page.
+const TRANSIENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+
+async function renewOnce(): Promise<'ok' | 'refused' | 'unreachable'> {
+  try {
+    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(RENEWAL_TIMEOUT_MS) : undefined;
+    const res = await fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'salonos' }, signal });
+    if (res.status >= 500 || res.status === 408 || res.status === 429) return 'unreachable';
+    if (!res.ok) return 'refused';
+    const json = (await res.json()) as { data: RefreshResult };
+    accessToken = json.data.accessToken;
+    onRefreshed?.(json.data);
+    return 'ok';
+  } catch {
+    return 'unreachable';
+  }
+}
+
 export async function refreshSession(): Promise<boolean> {
   refreshing ??= oneTabAtATime(async () => {
-    try {
-      const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(RENEWAL_TIMEOUT_MS) : undefined;
-      const res = await fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include', headers: { 'X-Requested-With': 'salonos' }, signal });
-      if (!res.ok) return false;
-      const json = (await res.json()) as { data: RefreshResult };
-      accessToken = json.data.accessToken;
-      onRefreshed?.(json.data);
-      return true;
-    } catch {
-      return false;
+    for (let attempt = 0; ; attempt++) {
+      const result = await renewOnce();
+      if (result !== 'unreachable' || attempt >= TRANSIENT_RETRY_DELAYS_MS.length) return result === 'ok';
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_DELAYS_MS[attempt]));
     }
   }).finally(() => {
     setTimeout(() => (refreshing = null), 0);

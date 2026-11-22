@@ -24,6 +24,21 @@ export function SlotPicker({ code, branchId, serviceIds, timezone, value, onChan
   useEffect(() => { onChange(null); }, [date, staffId]);
   const staff = q.data?.staff ?? [];
   const slots = staffId ? staff.find((s) => s.staffId === staffId)?.slots ?? [] : (q.data?.slots ?? []).map((s) => s.startAt);
+  // A full (or closed) day: look ahead for the next day with a free time, so the customer does not tap day after day.
+  const dayIsFull = !!q.data && slots.length === 0 && !q.data.beyondBookingWindowDays;
+  const nextFree = useQuery({
+    queryKey: ['public', 'next-free', code, branchId, date, serviceIds.join(','), staffId],
+    enabled: dayIsFull,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const next = await publicApi.get<{ date: string | null; firstStartAt: string | null }>(`/public/${code}/next-available`, { branchId, date, serviceIds, staffId: staffId || undefined });
+      return next.date && next.firstStartAt ? { date: next.date, first: next.firstStartAt } : null;
+    },
+  });
+  const goTo = (day: string) => {
+    setDate(day);
+    if (day >= addDaysTo(start, 7)) setStart(day);
+  };
 
   return (
     <div className="space-y-4">
@@ -41,7 +56,18 @@ export function SlotPicker({ code, branchId, serviceIds, timezone, value, onChan
       )}
       {q.isLoading && <div role="status" aria-label="Finding times" className="grid grid-cols-3 gap-2 sm:grid-cols-4"><Skeleton className="h-11" /><Skeleton className="h-11" /><Skeleton className="h-11" /><Skeleton className="h-11" /></div>}
       {q.isError && <p role="alert" className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">We could not load times just now. Please try again.</p>}
-      {q.data && slots.length === 0 && <p className="rounded-xl border border-dashed border-line p-4 text-center text-sm text-muted">{q.data.beyondBookingWindowDays ? `You can book up to ${q.data.beyondBookingWindowDays} days ahead. Please choose an earlier day.` : 'No times are free on this day. Please try another day.'}</p>}
+      {q.data && slots.length === 0 && (
+        <div className="rounded-xl border border-dashed border-line p-4 text-center text-sm text-muted">
+          <p>{q.data.beyondBookingWindowDays ? `You can book up to ${q.data.beyondBookingWindowDays} days ahead. Please choose an earlier day.` : 'No times are free on this day.'}</p>
+          {dayIsFull && nextFree.isLoading && <p className="mt-2" role="status">Finding the next free day…</p>}
+          {dayIsFull && nextFree.data && (
+            <button type="button" onClick={() => goTo(nextFree.data!.date)} className="mt-3 inline-flex min-h-11 items-center rounded-xl bg-primary px-4 text-sm font-semibold text-primary-fg">
+              Next free day: {fmtDay(nextFree.data.date, timezone)}, from {fmtTime(nextFree.data.first, timezone)}
+            </button>
+          )}
+          {dayIsFull && nextFree.data === null && <p className="mt-2">Nothing is free in the next three weeks. Please call the salon.</p>}
+        </div>
+      )}
       {slots.length > 0 && (
         <div role="group" aria-label="Choose a time" className="grid grid-cols-3 gap-2 sm:grid-cols-4">
           {slots.map((iso) => { const on = value?.startAt === iso; return <button key={iso} type="button" aria-pressed={on} onClick={() => onChange({ startAt: iso, staffId: staffId || null })} className={cn('min-h-11 rounded-xl border px-2 text-sm font-medium', on ? 'border-primary bg-primary text-primary-fg' : 'border-line bg-surface hover:border-primary/50')}>{fmtTime(iso, timezone)}</button>; })}

@@ -34,7 +34,11 @@ export function Component() {
   const todayList = useQuery({ queryKey: ['appointments', 'desk', branchId, today], queryFn: () => api.list<AppointmentDto>('/appointments', { branchId, from: today, to: today, pageSize: 100, sortDir: 'asc' }), refetchInterval: 20_000, enabled: !!branchId });
 
   const all = todayList.data?.rows ?? [];
-  const waiting = all.filter((a) => a.status === 'waiting');
+  // The same queue as the walk-in board (and the "Waiting" figure): anyone still waiting from an earlier day first,
+  // then today's in queue order.
+  const board = useQuery({ queryKey: ['walkins', branchId], queryFn: () => api.get<AppointmentDto[]>('/walkins', { branchId }), refetchInterval: 20_000, enabled: !!branchId });
+  const waiting = (board.data ?? []).filter((a) => a.walkInStage === 'waiting');
+  const WAITING_SHOWN = 6;
   const active = all.filter((a) => ['scheduled', 'confirmed', 'checked_in', 'in_service'].includes(a.status)).sort((a, b) => (a.startAt ?? '').localeCompare(b.startAt ?? ''));
   const toBill = all.filter((a) => a.status === 'completed' && !a.invoiceId);
 
@@ -123,13 +127,14 @@ export function Component() {
             <Card padded={false}>
               <div className="p-4 pb-0"><CardHeader title={`Waiting (${waiting.length})`} actions={<Link to="/walk-ins" className="text-sm font-medium text-primary hover:underline">Walk-in board</Link>} /></div>
               <ul className="divide-y divide-line">
-                {waiting.map((a) => (
+                {waiting.slice(0, WAITING_SHOWN).map((a) => (
                   <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-3">
-                    <div className="min-w-0"><p className="truncate font-medium"><span className="mr-1.5 text-muted">#{a.queueNumber}</span>{a.customer.fullName}</p><p className="truncate text-sm text-muted">{a.items.map((i) => i.serviceName).join(', ')}</p></div>
+                    <div className="min-w-0"><p className="truncate font-medium"><span className="mr-1.5 text-muted">#{a.queueNumber}</span>{a.customer.fullName}</p><p className="truncate text-sm text-muted">{a.items.map((i) => i.serviceName).join(', ')}{a.arrivedAt ? ` · waiting ${waitedFor(a.arrivedAt)}` : ''}</p></div>
                     <Button size="sm" onClick={() => setOpenId(a.id)}>Open</Button>
                   </li>
                 ))}
               </ul>
+              {waiting.length > WAITING_SHOWN && <p className="border-t border-line px-4 py-3 text-sm"><Link to="/walk-ins" className="font-medium text-primary hover:underline">{waiting.length - WAITING_SHOWN} more on the walk-in board</Link></p>}
             </Card>
           )}
         </div>
@@ -149,4 +154,10 @@ function QuickLink({ to, icon, label, hotkey }: { to: string; icon: React.ReactN
       <span className="flex w-full items-center justify-between text-sm font-semibold text-fg">{label}{hotkey && <kbd className="hidden rounded border border-line px-1.5 text-[10px] text-muted lg:block">{hotkey}</kbd>}</span>
     </Link>
   );
+}
+
+/** "4 min", "1 h 10 min": how long someone has been waiting. */
+function waitedFor(since: string): string {
+  const minutes = Math.max(Math.floor((Date.now() - new Date(since).getTime()) / 60_000), 0);
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 ? ` ${minutes % 60} min` : ''}`;
 }

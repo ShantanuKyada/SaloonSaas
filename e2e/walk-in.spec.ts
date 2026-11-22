@@ -25,17 +25,18 @@ test.describe('Walk-ins', () => {
 
     const waiting = page.getByRole('region', { name: 'Waiting' });
     await expect(waiting.getByText(name)).toBeVisible();
-    await cardOf(waiting, name, 'Assign team member').getByRole('button', { name: 'Assign team member' }).click();
+    await cardOf(waiting, name, 'Assign').getByRole('button', { name: 'Assign', exact: true }).click();
     const assign = page.getByRole('dialog', { name: new RegExp(`Assign team member · ${name}`) });
-    // "Free until 12:30 PM" is not enough for a service that runs past a booking, so only take someone who is free for good.
-    // Wait until the team list and everyone's live status have loaded (each option then reads "Name — status"), and only
-    // then look for someone free: `getAttribute` on an option that never appears would wait out the whole test instead
-    // of skipping it (this timed out in CI when everyone who was free had a booking later that day).
+    // Take someone free for long enough to finish the service now: the dialog marks anyone whose next booking or end of
+    // day comes first ("not enough time now"); late in the day that can be everyone (CI once ran at 5:16 PM on a Sunday,
+    // when the salon closes at 6:00 PM). Wait until the team list and everyone's live status have loaded (each option
+    // then reads "Name — status") before looking: `getAttribute` on an option that never appears would wait out the
+    // whole test instead of skipping it.
     const options = assign.getByRole('combobox').locator('option');
     await expect(options.filter({ hasText: / — / }).first()).toBeAttached();
-    const freeForGood = options.filter({ hasText: /— Free$/ });
-    test.skip((await freeForGood.count()) === 0, 'Nobody is free for the rest of the day to take the walk-in right now.');
-    const free = await freeForGood.first().getAttribute('value');
+    const freeLongEnough = options.filter({ hasText: /— Free/ }).filter({ hasNotText: /not enough time/ });
+    test.skip((await freeLongEnough.count()) === 0, 'Nobody is free long enough to start the walk-in right now.');
+    const free = await freeLongEnough.first().getAttribute('value');
     await assign.getByRole('combobox').selectOption(free!);
     await expect(assign.getByRole('switch', { name: 'Start right now' })).toBeChecked();
     await assign.getByRole('button', { name: 'Start now' }).click();

@@ -75,6 +75,9 @@ test.describe('Packages chosen at the visit', () => {
     const drawer = page.getByRole('dialog', { name: 'Walk-in' });
     await drawer.getByRole('searchbox', { name: /Find customer/i }).fill(walkIn);
     await drawer.getByRole('button', { name: new RegExp(`^${walkIn}`) }).click();
+    // A long list of combos is shortened; the new one may be behind "Show N more".
+    const more = drawer.getByRole('button', { name: /^Show \d+ more$/ });
+    if (await more.isVisible()) await more.click();
     await drawer.getByRole('button', { name: new RegExp(combo) }).click();
     await expect(drawer.getByRole('checkbox', { name: /^Hair Spa/ })).toBeChecked();
     await expect(drawer.getByRole('checkbox', { name: /^Facial/ })).toBeChecked();

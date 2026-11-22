@@ -43,6 +43,23 @@ test.describe('Signing in', () => {
     await expect(page).toHaveURL(/\/login$/);
   });
 
+  test('a server restart while the session is renewed does not sign anyone out', async ({ page }) => {
+    await signInAs(page, USERS.owner, '/dashboard');
+    await expect(page.getByRole('heading', { name: 'How is the salon doing?' })).toBeVisible();
+    // The next two renewals hit a server that is restarting (as during a deploy); the third goes through.
+    let failures = 0;
+    await page.route('**/api/v1/auth/refresh', async (route) => {
+      if (failures < 2) {
+        failures += 1;
+        await route.fulfill({ status: 502, body: 'Bad Gateway' });
+      } else await route.continue();
+    });
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'How is the salon doing?' })).toBeVisible({ timeout: 15_000 });
+    expect(failures).toBe(2);
+    await expect(page).toHaveURL(/\/dashboard$/);
+  });
+
   test('two tabs opened at the same moment both stay signed in', async ({ context }) => {
     // Tabs share the refresh cookie and every renewal rotates it. If both tabs renewed at once, the server would see the
     // second request as an already-used (stolen) token, refuse it and end every session of that sign-in.
