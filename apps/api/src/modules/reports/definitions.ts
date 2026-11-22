@@ -42,6 +42,8 @@ export interface ReportDefinition {
   group: 'Appointments' | 'Revenue' | 'Customers' | 'Pending payments & collections' | 'Staff';
   description: string;
   permissions: Permission[];
+  /** Compares branches: only listed for people who can see more than one branch. */
+  multiBranchOnly?: boolean;
   run: (ctx: ReportContext) => Promise<ReportResult>;
 }
 
@@ -162,6 +164,7 @@ export const REPORTS: ReportDefinition[] = [
     title: 'Appointments by branch',
     group: 'Appointments',
     description: 'Bookings and outcomes for each branch.',
+    multiBranchOnly: true,
     permissions: ['reports.operations'],
     run: async (c) => {
       const rows = await apptFilters(c)(c.tx.selectFrom('appointments as a').innerJoin('branches as b', 'b.id', 'a.branchId')).select(['b.name as branch', ...apptAggregates]).groupBy(['b.id', 'b.name']).orderBy('b.name').execute();
@@ -222,6 +225,7 @@ export const REPORTS: ReportDefinition[] = [
     title: 'Revenue by branch',
     group: 'Revenue',
     description: 'Billing and average bill for each branch.',
+    multiBranchOnly: true,
     permissions: ['reports.financial'],
     run: async (c) => {
       const rows = await invoiceFilters(c)(c.tx.selectFrom('invoices as i').innerJoin('branches as b', 'b.id', 'i.branchId'))
@@ -596,7 +600,53 @@ export const REPORTS: ReportDefinition[] = [
     permissions: ['reports.staff'],
     run: async (c) => staffRevenue(c),
   },
+  {
+    key: 'staff-commission',
+    title: 'Commission earned',
+    group: 'Staff',
+    description: 'What each team member earned in commission, from the rates set on their profile and per service.',
+    permissions: ['reports.staff'],
+    run: async (c) => staffCommission(c),
+  },
 ];
+
+/**
+ * Commission per team member for services on issued bills in the period. The rate is the one set for that person and
+ * service (Team → Assign services), else the person's usual rate (their profile): a percentage of the service amount
+ * after discounts and before tax, or a fixed amount for each service performed.
+ */
+async function staffCommission(c: ReportContext): Promise<ReportResult> {
+  const staffFilter = c.q.staffId ? sql`and ii.staff_id = ${c.q.staffId}` : sql``;
+  const { rows } = await sql<{ staffId: string; staffName: string; branchName: string; services: number; base: number; commission: number; noRate: number }>`
+    with lines as (
+      select ii.staff_id, i.branch_id, ii.quantity, ii.taxable_amount,
+             coalesce(ss.commission_type, st.commission_type) as ctype,
+             case when ss.commission_type is not null then coalesce(ss.commission_value, 0) else st.commission_value end as cvalue
+        from invoice_items ii
+        join invoices i on i.id = ii.invoice_id
+        join staff st on st.id = ii.staff_id
+        left join staff_services ss on ss.staff_id = ii.staff_id and ss.service_id = ii.service_id
+       where i.organization_id = ${c.orgId} and i.status = 'issued' and i.branch_id = any(${c.branches}::uuid[])
+         and i.invoice_date between ${c.q.from}::date and ${c.q.to}::date
+         and ii.item_type in ('service', 'package_redemption') and ii.staff_id is not null ${staffFilter}
+    )
+    select st.id as "staffId", st.display_name as "staffName", b.name as "branchName",
+           sum(l.quantity)::int as services, sum(l.taxable_amount)::bigint as base,
+           sum(case l.ctype when 'percentage' then round(l.taxable_amount * l.cvalue / 10000.0) when 'flat' then l.quantity * l.cvalue else 0 end)::bigint as commission,
+           sum(case when l.ctype = 'none' then l.quantity else 0 end)::int as "noRate"
+      from lines l join staff st on st.id = l.staff_id join branches b on b.id = st.branch_id
+     group by st.id, st.display_name, b.name
+     order by commission desc, st.display_name`.execute(c.tx);
+  const data = rows.map((r) => ({ ...r, services: n(r.services), base: n(r.base), commission: n(r.commission), noRate: n(r.noRate) }));
+  const unset = data.filter((r) => r.noRate > 0).length;
+  return {
+    columns: [col('staffName', 'Team member'), col('branchName', 'Branch'), col('services', 'Services performed', 'number'), col('base', 'Service amount (after discounts, excl. tax)', 'money'), col('commission', 'Commission', 'money'), col('noRate', 'Services with no rate set', 'number')],
+    rows: data,
+    totals: { staffName: 'Total', services: sum(data, (x) => x.services), base: sum(data, (x) => x.base), commission: sum(data, (x) => x.commission), noRate: sum(data, (x) => x.noRate) },
+    total: data.length,
+    note: `Rates come from Team → Assign services (per service), else the team member's profile. Percentages apply to the service amount after discounts and before tax; package sessions count at the amount billed for them. Fixed amounts are per service performed.${unset ? ` ${unset} team ${unset === 1 ? 'member has' : 'members have'} services with no rate set.` : ''}`,
+  };
+}
 
 async function staffRevenue(c: ReportContext): Promise<ReportResult> {
   const m = await loadStaffMetrics(c.tx, c.orgId, c.branches, c.q, c.q.staffId ? [c.q.staffId] : undefined);
@@ -609,5 +659,5 @@ async function staffRevenue(c: ReportContext): Promise<ReportResult> {
 }
 
 export function reportsFor(auth: AuthContext): ReportDefinition[] {
-  return REPORTS.filter((r) => r.permissions.some((p) => hasPermission(auth, p)));
+  return REPORTS.filter((r) => r.permissions.some((p) => hasPermission(auth, p)) && (!r.multiBranchOnly || auth.branchIds.length > 1));
 }

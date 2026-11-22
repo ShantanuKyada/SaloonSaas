@@ -129,6 +129,15 @@ describe('what each role can do', () => {
     expect((await manager.get(`/attendance?from=${today}&to=${today}`)).status).toBe(200);
   });
 
+  it('branch comparison reports are listed only for people who see more than one branch', async () => {
+    const keys = async (who: ReturnType<typeof authed>) => ((await who.get('/reports')).body.data as Array<{ reports: Array<{ key: string }> }>).flatMap((g) => g.reports.map((r) => r.key));
+    expect(await keys(owner)).toEqual(expect.arrayContaining(['revenue-branches', 'appointments-branch', 'staff-commission']));
+    const mine = await keys(manager);
+    expect(mine).not.toContain('revenue-branches');
+    expect(mine).not.toContain('appointments-branch');
+    expect(mine).toContain('staff-commission');
+  });
+
   it('a manager’s dashboard is the business story for their branch only', async () => {
     const res = await manager.get(`/dashboard/owner?from=${today}&to=${today}`);
     expect(res.status).toBe(200);

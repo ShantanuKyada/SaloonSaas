@@ -149,7 +149,9 @@ r.post('/:code/bookings', { summary: 'Book online', auth: 'public', body: public
     const id = await createAppointment(t, ctx, { branchId: body.branchId, customerId, source: 'online', status: 'scheduled', notes: body.notes ?? null, internalNotes: null, items, notifyCustomer: true, allowOutsideHours: false });
     await t.updateTable('appointments').set({ manageTokenHash: sha256(token) }).where('id', '=', id).execute();
     const [dto] = await loadAppointmentDtos(t, ctx, org.id, [id], settings);
-    return view(dto!, { salonName: org.name, salonCode: params.code!.toLowerCase(), branchPhone: branch.phone, timezone: branch.timezone, canChange: true });
+    // Only promise a confirmation message when one was really queued (none is when the salon has no messaging set up).
+    const confirmation = await t.selectFrom('notifications').select('channel').where('organizationId', '=', org.id).where('sourceId', '=', id).where('eventType', '=', 'appointment_confirmation').executeTakeFirst();
+    return { ...view(dto!, { salonName: org.name, salonCode: params.code!.toLowerCase(), branchPhone: branch.phone, timezone: branch.timezone, canChange: true }), confirmationSent: !!confirmation };
   });
   return { ...result, manageLink: `${env.APP_BASE_URL}/book/manage/${token}` };
 });
