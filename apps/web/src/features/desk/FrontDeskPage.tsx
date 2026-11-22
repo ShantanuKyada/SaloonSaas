@@ -12,7 +12,7 @@ import { SalonNowTiles, StaffNowList } from '@/features/dashboards/LiveStatus';
 import { useQuickActions } from '@/features/quick/QuickActions';
 import { TeamRequests } from './TeamRequests';
 import { api } from '@/lib/api';
-import { useCan, useUser } from '@/lib/auth';
+import { useCan, useFeature, useUser } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { fmtTime, greeting, todayIn } from '@/lib/format';
 import { useNow } from '@/lib/hooks';
@@ -23,6 +23,7 @@ type Live = SalonNow & { branchId: string; branchName: string };
 export function Component() {
   const user = useUser();
   const can = useCan();
+  const walkInBoard = useFeature()('walk_ins');
   const quick = useQuickActions();
   const { branchId, branch, timezone } = useBranch();
   const actions = useAppointmentActions(timezone);
@@ -125,7 +126,7 @@ export function Component() {
 
           {waiting.length > 0 && (
             <Card padded={false}>
-              <div className="p-4 pb-0"><CardHeader title={`Waiting (${waiting.length})`} actions={<Link to="/walk-ins" className="text-sm font-medium text-primary hover:underline">Walk-in board</Link>} /></div>
+              <div className="p-4 pb-0"><CardHeader title={`Waiting (${waiting.length})`} actions={walkInBoard && <Link to="/walk-ins" className="text-sm font-medium text-primary hover:underline">Walk-in board</Link>} /></div>
               <ul className="divide-y divide-line">
                 {waiting.slice(0, WAITING_SHOWN).map((a) => (
                   <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-3">
@@ -134,7 +135,7 @@ export function Component() {
                   </li>
                 ))}
               </ul>
-              {waiting.length > WAITING_SHOWN && <p className="border-t border-line px-4 py-3 text-sm"><Link to="/walk-ins" className="font-medium text-primary hover:underline">{waiting.length - WAITING_SHOWN} more on the walk-in board</Link></p>}
+              {walkInBoard && waiting.length > WAITING_SHOWN && <p className="border-t border-line px-4 py-3 text-sm"><Link to="/walk-ins" className="font-medium text-primary hover:underline">{waiting.length - WAITING_SHOWN} more on the walk-in board</Link></p>}
             </Card>
           )}
         </div>

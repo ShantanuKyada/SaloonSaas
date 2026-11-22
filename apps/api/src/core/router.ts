@@ -148,7 +148,8 @@ export function createRouter(basePath: string, tag: string) {
         query = parsed.data;
       }
 
-      const scope = { orgId: ctxAuth.orgId, platform: auth === 'platform' || ctxAuth.isPlatformAdmin, userId: ctxAuth.userId || null };
+      // Support mode keeps the database's tenant rules on: a platform administrator inside a salon sees only that salon.
+      const scope = { orgId: ctxAuth.orgId, platform: auth === 'platform' || (ctxAuth.isPlatformAdmin && !ctxAuth.supportMode), userId: ctxAuth.userId || null };
       const result = await handler({
         req,
         res,

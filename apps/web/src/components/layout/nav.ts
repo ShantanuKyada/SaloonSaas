@@ -1,4 +1,4 @@
-import type { Permission } from '@salon/shared';
+import type { FeatureKey, Permission } from '@salon/shared';
 import { BarChart3, Bell, Building2, CalendarCheck, CalendarDays, CalendarRange, DoorOpen, LayoutDashboard, ListChecks, Receipt, Scissors, Settings, ShieldCheck, Sparkles, Store, UserCog, Users, Wallet, type LucideIcon } from 'lucide-react';
 
 // Sidebar structure from the product brief, written in the salon's own words. An item shows when the user has ANY of
@@ -12,6 +12,8 @@ export interface NavItem {
   any?: Permission[];
   /** Needs none of these (e.g. the staff-only home). */
   unless?: Permission[];
+  /** Only while this feature is switched on for the salon. */
+  feature?: FeatureKey;
   end?: boolean;
 }
 export interface NavGroup {
@@ -37,7 +39,7 @@ export const NAV: NavGroup[] = [
     items: [
       { label: 'Calendar', to: '/appointments/calendar', any: ['appointments.view'] },
       { label: 'Appointment list', to: '/appointments', any: ['appointments.view'], end: true },
-      { label: 'Walk-ins', to: '/walk-ins', icon: DoorOpen, any: ['walkins.manage', 'appointments.view'] },
+      { label: 'Walk-ins', to: '/walk-ins', icon: DoorOpen, any: ['walkins.manage', 'appointments.view'], feature: 'walk_ins' },
     ],
   },
   {
@@ -82,7 +84,7 @@ export const NAV: NavGroup[] = [
     ],
   },
   {
-    items: [{ label: 'Reports', to: '/reports', icon: BarChart3, any: ['reports.operations', 'reports.financial', 'reports.staff', 'attendance.view'] }],
+    items: [{ label: 'Reports', to: '/reports', icon: BarChart3, any: ['reports.operations', 'reports.financial', 'reports.staff', 'attendance.view'], feature: 'reports' }],
   },
   {
     label: 'Messages',
@@ -105,9 +107,9 @@ export const NAV: NavGroup[] = [
   },
 ];
 
-export function visibleNav(can: (p: Permission[]) => boolean): NavGroup[] {
+export function visibleNav(can: (p: Permission[]) => boolean, featureOn: (f: FeatureKey) => boolean = () => true): NavGroup[] {
   return NAV.map((g) => ({
     ...g,
-    items: g.items.filter((i) => (!i.any || can(i.any)) && (!i.unless || !can(i.unless))),
+    items: g.items.filter((i) => (!i.any || can(i.any)) && (!i.unless || !can(i.unless)) && (!i.feature || featureOn(i.feature))),
   })).filter((g) => g.items.length > 0);
 }

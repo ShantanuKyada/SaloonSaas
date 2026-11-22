@@ -31,6 +31,20 @@ export async function issueAccessToken(userId: string, orgId: string | null): Pr
     .sign(ACCESS_TOKEN_KEY);
 }
 
+/** How long a platform administrator's support session inside a salon lasts (it is not renewed). */
+export const SUPPORT_SESSION_SECONDS = 60 * 60;
+
+/** A support-mode token: the platform administrator, acting inside one salon. */
+export async function issueSupportToken(adminId: string, orgId: string): Promise<string> {
+  return new SignJWT({ org: orgId, support: true })
+    .setProtectedHeader({ alg: 'HS256', typ: 'access+jwt' })
+    .setSubject(adminId)
+    .setIssuer(env.JWT_ISSUER)
+    .setIssuedAt()
+    .setExpirationTime(`${SUPPORT_SESSION_SECONDS}s`)
+    .sign(ACCESS_TOKEN_KEY);
+}
+
 async function createRefreshToken(tx: Tx, userId: string, familyId: string | null, meta: ClientMeta): Promise<{ token: string; id: string }> {
   const token = randomToken(32);
   const row = await tx
@@ -301,8 +315,9 @@ export async function changePassword(auth: AuthContext, currentPassword: string,
   });
 }
 
-export async function buildSession(userId: string): Promise<SessionUser> {
-  const principal = await getPrincipal(userId);
+export async function buildSession(userId: string, current?: AuthContext, supportExpiresAt?: Date): Promise<SessionUser> {
+  // A support session's principal comes with its token; everyone else's is looked up by user.
+  const principal = current?.supportMode ? current : await getPrincipal(userId);
   if (!principal) throw new AppError(401, 'ACCOUNT_DISABLED', 'This account is disabled.');
   return withSystem(async (tx) => {
     const user = await tx
@@ -330,6 +345,7 @@ export async function buildSession(userId: string): Promise<SessionUser> {
           'o.taxLabel',
           'o.logoUrl',
           'o.onboardingCompletedAt',
+          'o.disabledFeatures',
           's.staffCanViewCustomerPhone',
           's.staffCanViewOwnPerformance',
           's.slotIntervalMinutes',
@@ -349,6 +365,7 @@ export async function buildSession(userId: string): Promise<SessionUser> {
         taxLabel: org.taxLabel,
         logoUrl: org.logoUrl,
         onboardingCompleted: org.onboardingCompletedAt !== null,
+        disabledFeatures: org.disabledFeatures,
       };
       preferences = {
         staffCanViewCustomerPhone: org.staffCanViewCustomerPhone,
@@ -366,10 +383,13 @@ export async function buildSession(userId: string): Promise<SessionUser> {
           .orderBy('name')
           .execute();
       }
-      const roleRow = principal.roleId
-        ? await tx.selectFrom('roles').select(['id', 'key', 'name', 'homeScreen']).where('id', '=', principal.roleId).executeTakeFirst()
-        : undefined;
-      role = roleRow ? { id: roleRow.id, key: roleRow.key, name: roleRow.name, homeScreen: roleRow.homeScreen as HomeScreen } : null;
+      // Support mode works as the salon's owner would, so it opens on the owner's screens.
+      const roleRow = principal.supportMode
+        ? await tx.selectFrom('roles').select(['id', 'key', 'name', 'homeScreen']).where('organizationId', '=', principal.orgId!).where('key', '=', 'owner').executeTakeFirst()
+        : principal.roleId
+          ? await tx.selectFrom('roles').select(['id', 'key', 'name', 'homeScreen']).where('id', '=', principal.roleId).executeTakeFirst()
+          : undefined;
+      role = roleRow ? { id: roleRow.id, key: roleRow.key, name: principal.supportMode ? 'Platform support' : roleRow.name, homeScreen: roleRow.homeScreen as HomeScreen } : null;
     }
 
     return {
@@ -384,7 +404,8 @@ export async function buildSession(userId: string): Promise<SessionUser> {
       allBranches: principal.allBranches,
       branches,
       staffId: principal.staffId,
-      mustChangePassword: user.mustChangePassword,
+      mustChangePassword: principal.supportMode ? false : user.mustChangePassword,
+      support: principal.supportMode && organization ? { organizationName: organization.name, expiresAt: (supportExpiresAt ?? new Date(Date.now() + SUPPORT_SESSION_SECONDS * 1000)).toISOString() } : null,
       twoFactor: await twoFactorState(tx, principal),
       preferences,
     };

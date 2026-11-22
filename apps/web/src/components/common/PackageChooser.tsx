@@ -1,5 +1,6 @@
 import { Check, Package } from 'lucide-react';
 import { useState, type Dispatch, type SetStateAction } from 'react';
+import { useFeature } from '@/lib/auth';
 import { sellableAt, usePackages, type PackageRow } from '@/lib/packages';
 import { cn } from '@/lib/utils';
 import { useMoney } from './badges';
@@ -53,7 +54,8 @@ export function PackageChooser({ branchId, chosen, onToggle }: { branchId: strin
   const money = useMoney();
   const q = usePackages();
   const [all, setAll] = useState(false);
-  const onSale = sellableAt(q.data, branchId);
+  const featureOn = useFeature();
+  const onSale = featureOn('packages') ? sellableAt(q.data, branchId) : [];
   const picked = (q.data ?? []).filter((p) => chosen.includes(p.id));
   // Chosen ones first; a long list stays short (the services below matter more) until someone asks for the rest.
   const shown = [...picked, ...onSale.filter((p) => !chosen.includes(p.id))];

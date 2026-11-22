@@ -1,6 +1,6 @@
 import { reportQuery, type ReportQuery } from '@salon/shared';
 import { audit } from '../../core/audit.js';
-import { branchFilter, hasPermission, requireOrgId } from '../../core/auth-context.js';
+import { branchFilter, hasPermission, requireFeature, requireOrgId } from '../../core/auth-context.js';
 import { toCsv } from '../../core/csv.js';
 import { AppError } from '../../core/errors.js';
 import { createRouter, FileResponse } from '../../core/router.js';
@@ -13,6 +13,7 @@ const ALL = ['reports.operations', 'reports.financial', 'reports.staff', 'attend
 const CSV_ROW_CAP = 50_000;
 
 r.get('/', { summary: 'Reports you can run, grouped for the Reports menu', permissions: [...ALL] }, async ({ auth }) => {
+  requireFeature(auth, 'reports', 'Reports');
   const groups = new Map<string, Array<{ key: string; title: string; description: string }>>();
   for (const def of reportsFor(auth)) {
     if (!groups.has(def.group)) groups.set(def.group, []);
@@ -29,6 +30,7 @@ function csvValue(type: ReportColumn['type'], value: unknown): unknown {
 }
 
 r.get('/:key', { summary: 'Run a report (JSON with server-side paging, or CSV that opens in Excel)', permissions: [...ALL], query: reportQuery }, async ({ tx, auth, params, query }) => {
+  requireFeature(auth, 'reports', 'Reports');
   const def = REPORTS.find((x) => x.key === params.key);
   if (!def) throw new AppError(404, 'NOT_FOUND', 'That report does not exist.');
   if (!def.permissions.some((p) => hasPermission(auth, p))) throw new AppError(403, 'FORBIDDEN', "You don't have permission to view this report.");

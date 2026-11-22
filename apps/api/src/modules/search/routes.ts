@@ -105,7 +105,8 @@ audit.get('/', { summary: 'Who did what and when (bills, payments, bookings, set
     if (query.search) base = base.where((eb) => eb.or([eb('l.summary', 'ilike', `%${query.search}%`), eb('l.action', 'ilike', `%${query.search}%`)]));
     const { n } = await base.select((eb) => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
     const rows = await base
-      .select(['l.id', 'l.createdAt', 'l.action', 'l.entityType', 'l.entityId', 'l.summary', 'l.oldValues', 'l.newValues', 'l.ip', 'l.userAgent', 'u.fullName as userName'])
+      // Platform administrators are not the salon's users (their record is not visible here): name the team instead.
+      .select(['l.id', 'l.createdAt', 'l.action', 'l.entityType', 'l.entityId', 'l.summary', 'l.oldValues', 'l.newValues', 'l.ip', 'l.userAgent', sql<string | null>`case when l.user_id is null then null else coalesce(u.full_name, 'SalonOS platform team') end`.as('userName')])
       .orderBy('l.id', 'desc')
       .limit(query.pageSize)
       .offset((query.page - 1) * query.pageSize)

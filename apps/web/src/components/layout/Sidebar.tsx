@@ -1,7 +1,7 @@
 import { ChevronDown } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router';
-import { useCan, useUser } from '@/lib/auth';
+import { useCan, useFeature, useUser } from '@/lib/auth';
 import { cn } from '@/lib/utils';
 import { visibleNav, type NavGroup } from './nav';
 
@@ -60,7 +60,8 @@ function Item({ item, onNavigate, top }: { item: NavGroup['items'][number]; onNa
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const can = useCan();
   const user = useUser();
-  const groups = visibleNav((p) => can(p));
+  const featureOn = useFeature();
+  const groups = visibleNav((p) => can(p), featureOn);
   // One menu open at a time: opening another closes it. The menu holding the current page opens when you arrive there.
   const { pathname } = useLocation();
   const current = groups.find((g) => g.label && isActive(g, pathname))?.label ?? null;

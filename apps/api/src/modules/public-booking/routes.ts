@@ -43,11 +43,11 @@ async function salonByCode(code: string) {
     tx
       .selectFrom('organizations as o')
       .innerJoin('organizationSettings as s', 's.organizationId', 'o.id')
-      .select(['o.id', 'o.name', 'o.status', 'o.currency', 's.onlineBookingEnabled'])
+      .select(['o.id', 'o.name', 'o.status', 'o.currency', 'o.disabledFeatures', 's.onlineBookingEnabled'])
       .where('o.code', '=', code.toLowerCase())
       .executeTakeFirst(),
   );
-  if (!org || org.status !== 'active' || !org.onlineBookingEnabled) throw new AppError(404, 'NOT_FOUND', 'Online booking is not available for this salon.');
+  if (!org || org.status !== 'active' || !org.onlineBookingEnabled || org.disabledFeatures.includes('online_booking')) throw new AppError(404, 'NOT_FOUND', 'Online booking is not available for this salon.');
   return org;
 }
 

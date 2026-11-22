@@ -1,3 +1,4 @@
+import { FEATURE_KEYS, type FeatureKey } from '../features.js';
 import { z } from 'zod';
 import { HOME_SCREENS, INTEGRATION_KINDS, TWO_FACTOR_REQUIREMENTS } from '../constants.js';
 import { ALL_PERMISSIONS } from '../permissions.js';
@@ -112,6 +113,8 @@ export const updateOrganizationStatusSchema = z.object({
   subscriptionPlan: z.enum(['trial', 'starter', 'growth', 'enterprise']).optional(),
   subscriptionStatus: z.enum(['trialing', 'active', 'past_due', 'cancelled']).optional(),
   maxBranches: z.number().int().min(1).max(1000).nullish(),
+  /** Features switched off for this salon (the rest are on). */
+  disabledFeatures: z.array(z.enum(FEATURE_KEYS as [FeatureKey, ...FeatureKey[]])).max(50).optional(),
 });
 
 export const organizationProfileSchema = z.object({
