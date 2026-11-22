@@ -255,4 +255,14 @@ export const publicBookingSchema = z.object({
   /** Honeypot field: real users never fill it. */
   website: z.string().max(0).optional(),
 });
+
+/** "Book again" from a customer's private link: the customer is already known, so only the visit itself is sent. */
+export const rebookSchema = z.object({
+  branchId: zId,
+  serviceIds: z.array(zId).min(1).max(5),
+  staffId: optionalId,
+  startAt: zDateTime,
+  notes: optionalText(500),
+});
+export type RebookInput = z.input<typeof rebookSchema>;
 export type PublicBookingInput = z.input<typeof publicBookingSchema>;

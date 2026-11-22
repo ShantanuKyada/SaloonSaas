@@ -13,6 +13,7 @@ interface FeatureDef {
 
 export const FEATURES = {
   online_booking: { label: 'Online booking', description: 'Customers book from the salon’s own booking page.', permissions: [] },
+  customer_portal: { label: 'Customer self-service', description: 'From their private link, customers see their upcoming and past visits and book again.', permissions: [] },
   walk_ins: { label: 'Walk-in queue', description: 'The walk-in board and adding walk-ins at the desk.', permissions: ['walkins.manage'] },
   packages: { label: 'Packages and combos', description: 'Selling packages and combos, and managing them.', permissions: ['packages.manage'] },
   offers: { label: 'Offers', description: 'Discount offers applied on bills, and managing them.', permissions: ['offers.manage'] },

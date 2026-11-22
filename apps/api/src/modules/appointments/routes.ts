@@ -13,6 +13,7 @@ import {
   type CalendarResource,
 } from '@salon/shared';
 import { z } from 'zod';
+import { audit } from '../../core/audit.js';
 import { assertBranchAccess, branchFilter, isOwnScopeOnly, nonEmpty, requireOrgId, type AuthContext } from '../../core/auth-context.js';
 import { AppError, notFound } from '../../core/errors.js';
 import { createRouter, paged } from '../../core/router.js';
@@ -20,6 +21,7 @@ import { eachDate, isoWeekday, localRangeToUtc, todayIn } from '../../core/time.
 import { loadBranch, loadSettings } from '../../core/validation.js';
 import type { Tx } from '../../db/tenant.js';
 import { phoneDigits } from '../customers/service.js';
+import { createCustomerLink } from '../customer-portal/links.js';
 import { loadAppointmentDtos, visibleToOwnScope } from './dto.js';
 import { assignWalkIn, changeStatus, createAppointment, createWalkIn, moveAppointment, updateAppointment } from './service.js';
 
@@ -186,6 +188,18 @@ r.get('/calendar', { summary: 'Calendar data: staff columns, working hours, leav
 });
 
 r.get('/:id', { summary: 'Appointment details', permissions: [...VIEW] }, async ({ tx, auth, params }) => tx((t) => oneDto(t, auth, params.id!)));
+
+// For salons without a message channel (or a customer who lost the message): a fresh private link the front desk can send
+// by hand. It opens this booking and, with self-service on, the customer's other visits.
+r.post('/:id/customer-link', { summary: "Make a private link to this booking for the customer", permissions: ['appointments.create'], status: 200 }, async ({ tx, auth, params }) =>
+  tx(async (t) => {
+    const dto = await oneDto(t, auth, params.id!);
+    if (dto.status === 'waiting') throw new AppError(409, 'CONFLICT', 'Walk-ins in the queue do not have a booking link.');
+    const url = await createCustomerLink(t, requireOrgId(auth), dto.id, dto.customer.id);
+    await audit(t, auth, { action: 'appointment.customer_link', entityType: 'appointment', entityId: dto.id, branchId: dto.branchId, summary: `Made a private booking link for ${dto.customer.fullName} (${dto.bookingNumber})` });
+    return { url };
+  }),
+);
 
 r.get('/:id/events', { summary: 'Appointment timeline (created, moved, status changes)', permissions: [...VIEW] }, async ({ tx, auth, params }) =>
   tx(async (t) => {

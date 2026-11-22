@@ -1,15 +1,18 @@
 import type { AppointmentEventDto } from '@salon/shared';
 import { APPOINTMENT_SOURCE_LABELS } from '@salon/shared';
-import { useQuery } from '@tanstack/react-query';
-import { Clock, Package, Phone, Receipt } from 'lucide-react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Clock, Copy, MessageCircle, Package, Phone, Receipt } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { Money, PaymentBadge, PendingChip, StatusBadge } from '@/components/common/badges';
 import { Button } from '@/components/ui/button';
 import { Avatar, Badge, ErrorState, InlineNotice, Skeleton } from '@/components/ui/display';
-import { Drawer, Menu } from '@/components/ui/overlay';
+import { Drawer, Menu, Modal } from '@/components/ui/overlay';
+import { Input } from '@/components/ui/form';
+import { toast } from 'sonner';
+import { toastError } from '@/app/providers';
 import { api } from '@/lib/api';
-import { useCan } from '@/lib/auth';
+import { useCan, useUser } from '@/lib/auth';
 import { useBranch } from '@/lib/branch';
 import { fmtDateTime, fmtDay, fmtDuration, fmtTime } from '@/lib/format';
 import { useAppointment } from '@/lib/queries';
@@ -27,7 +30,11 @@ export function AppointmentDrawer({ id, onClose }: { id: string; onClose: () => 
   const a = q.data;
   const list = a ? nextActions(a, (p) => can(p), actions) : [];
   const primary = list.find((x) => x.primary);
-  const secondary = list.filter((x) => !x.primary);
+  // The customer's private link (their booking and, with self-service, their other visits), to send by hand.
+  const [link, setLink] = useState<string | null>(null);
+  const makeLink = useMutation({ mutationFn: () => api.post<{ url: string }>(`/appointments/${id}/customer-link`), onSuccess: (r) => setLink(r.url), onError: toastError });
+  const canLink = !!a && a.status !== 'waiting' && can('appointments.create');
+  const secondary = [...list.filter((x) => !x.primary), ...(canLink ? [{ label: 'Customer’s booking link', run: () => makeLink.mutate(), tone: undefined }] : [])];
 
   return (
     <>
@@ -124,6 +131,28 @@ export function AppointmentDrawer({ id, onClose }: { id: string; onClose: () => 
         )}
       </Drawer>
       {actions.dialogs}
+      {link && a && <BookingLinkDialog url={link} customerName={a.customer.fullName} mobile={a.customer.mobile} onClose={() => setLink(null)} />}
     </>
+  );
+}
+
+/** A fresh private link for the customer: copy it, or send it on WhatsApp with a short note. */
+function BookingLinkDialog({ url, customerName, mobile, onClose }: { url: string; customerName: string; mobile: string | null; onClose: () => void }) {
+  const salon = useUser().organization?.name ?? 'the salon';
+  const phone = mobile && /^[+\d\s-]+$/.test(mobile) ? mobile.replace(/[^\d]/g, '') : '';
+  const text = encodeURIComponent(`Hi ${customerName.split(' ')[0]}, here is your booking at ${salon}. You can see it, change it or book again here: ${url}`);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('Link copied');
+    } catch {
+      toast.error('Could not copy. Select the link and copy it yourself.');
+    }
+  };
+  return (
+    <Modal open onOpenChange={(o) => !o && onClose()} title="Customer’s booking link" description={`A private link for ${customerName}. It opens this booking and their other visits. Anyone with the link can see them, so send it only to the customer.`} size="sm"
+      footer={<><Button variant="outline" icon={<Copy className="size-4" />} onClick={() => void copy()}>Copy link</Button>{phone.length >= 10 && <a className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-fg hover:opacity-90" href={`https://wa.me/${phone}?text=${text}`} target="_blank" rel="noreferrer"><MessageCircle className="size-4" aria-hidden />Send on WhatsApp</a>}</>}>
+      <Input readOnly value={url} aria-label="Booking link" onFocus={(e) => e.currentTarget.select()} />
+    </Modal>
   );
 }

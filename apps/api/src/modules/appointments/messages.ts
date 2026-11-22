@@ -2,7 +2,8 @@ import { DateTime } from 'luxon';
 import type { AuthContext } from '../../core/auth-context.js';
 import type { OrgSettings } from '../../core/validation.js';
 import type { Tx } from '../../db/tenant.js';
-import { cancelPendingNotifications, enqueueNotification } from '../notifications/outbox.js';
+import { createCustomerLink } from '../customer-portal/links.js';
+import { availableChannels, cancelPendingNotifications, enqueueNotification } from '../notifications/outbox.js';
 
 const MINUTE = 60_000;
 const REMINDER_EVENTS = ['appointment_reminder'] as const;
@@ -58,6 +59,11 @@ export async function queueAppointmentMessages(
 ): Promise<void> {
   const { appointment: a, variables } = await loadContext(tx, orgId, appointmentId);
   const startMs = a.startAt?.getTime() ?? 0;
+  // The customer's private link (see, move or cancel it, and their other visits) goes with the booking's messages.
+  // It is only made when the salon has a channel that can deliver it.
+  if (kind !== 'cancellation' && (options.message || options.reminders) && (await availableChannels(tx, orgId)).size > 0) {
+    variables.manageLink = await createCustomerLink(tx, orgId, a.id, a.customerId);
+  }
   const base = { orgId, branchId: a.branchId, customerId: a.customerId, sourceType: 'appointment', sourceId: a.id, variables, createdBy: auth.userId || null };
 
   if (options.message) {
