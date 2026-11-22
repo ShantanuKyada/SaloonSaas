@@ -51,6 +51,17 @@ service → Create bill**. *More actions* has *Reschedule*, *Cancel* and *Mark a
 
 Paid advance, or more than the bill? The extra is kept on their account as an advance and used next time.
 
+### Combos and packages at the visit
+
+When booking or adding a walk-in, combos that are on sale today are listed with the services. Choosing one adds its services; the
+combo is sold on that visit's bill and pays for those services, and anything left over stays on the customer's account for later
+visits.
+
+### Requests from the team
+
+The **Front desk** shows team members' requests: leave, and asks to move one of their bookings. *Approve* moves the booking
+(you can tell the customer) or records the leave; *Decline* keeps things as they are. The team member is told either way.
+
 ### Collect a pending payment
 
 `P` (or **Billing → Collect payment**): choose the customer, enter the amount received, pick the method. By default the oldest
@@ -59,9 +70,14 @@ a one-tap *Remind* button (reminders are limited so customers are not pestered).
 
 ## Branch manager: the day at a glance
 
-* **Today at the salon** shows who is free, serving, on a break or away right now, how many are waiting, today's sales and what
-  needs attention. It refreshes by itself. "Free" always means free *and* the salon is open; just-finished services show clean-up
-  time.
+* **Branch dashboard** is the owner's dashboard for your branch: what needs attention, the money for the period you choose (with
+  the trend and the change from the period before), today, bookings and top services, the team (revenue and how busy each
+  person was) and customers. The *Today* part shows who is free, serving, on a break or away right now and refreshes by itself.
+  "Free" always means free *and* the salon is open; just-finished services show clean-up time.
+* **Your branch only:** you see your branch's bookings, bills, team and customers. Customers of other branches can still be
+  found by name or mobile to book them here; their page then shows only what happened at your branch.
+* **Customers:** archive a customer who should no longer appear in lists, search or booking (their history is kept); bring them
+  back from *Customers → Archived*.
 * **Calendar:** one column per team member. Drag an appointment to move it or drag its bottom edge to change its length; you are
   asked to confirm and can notify the customer. Grey hatching is time off, leave or outside working hours.
 * **Team → Schedules & leave:** weekly hours and breaks, one-day changes (an extra Sunday), leave (you are shown any bookings
@@ -83,6 +99,10 @@ a one-tap *Remind* button (reminders are limited so customers are not pestered).
   **Campaigns** to message them. Only customers who agreed to offers are ever contacted.
 * **Reports:** pick a report, a date range and filters; view it, print it or *Download for Excel*. Everything on screen is also
   in the file.
+* **Roles out of the box:** *Receptionist* runs the front desk (bookings, walk-ins, customers, bills, payments and dues).
+  *Branch manager* adds the branch dashboard and reports, the team (staff, schedules, leave, attendance), money corrections
+  (discounts, cancelling bills, refunds, adjustments), exports and the activity log. *Staff* see their own work. Message templates
+  are shared by every branch, so only the owner edits them unless you give another role that permission.
 * **Users & roles:** add logins, choose branches, and tailor what each role can do. Temporary passwords must be changed at first
   sign-in. Switching a person off signs them out immediately. The *Two-step sign-in* column shows who has it on, and
   **Reset two-step sign-in** in a person's menu switches it off for someone who lost their phone (see below).
@@ -135,6 +155,13 @@ is not offered if your salon requires it for your role.
 
 Signing in shows only your appointments for today: the one in progress, the next one, and the rest. Tap **Start service** and
 **Complete service**. You can see the customer's notes but only the contact details your salon allows.
+
+* **My appointments:** your coming and past bookings. *Ask to reschedule* picks a free time and sends it to the front desk,
+  which approves or declines.
+* **My schedule & leave:** your hours for the next two weeks, your leave, and *Ask for leave*.
+* **The bell** (top right) tells you about new bookings for you, bookings that moved or were cancelled, and the answers to your
+  requests. If your salon has WhatsApp, SMS or email set up, a new booking is also sent to your phone (your salon can switch
+  this off in *Settings → Privacy*).
 
 ## Customers: booking online
 

@@ -16,7 +16,7 @@ interface SalonInfo {
   branches: Array<{ id: string; name: string; addressLine1: string | null; city: string | null; phone: string | null; timezone: string }>;
   services: Array<{ id: string; name: string; description: string | null; category: string; durationMinutes: number; price: number; allBranches: boolean; branchIds: string[] }>;
 }
-interface Booked { bookingNumber: string; startAt: string; branchName: string; branchPhone: string | null; salonName: string; services: Array<{ name: string; staffName: string | null; startAt: string | null; durationMinutes: number; price: number }>; total: number; manageLink: string }
+interface Booked { bookingNumber: string; startAt: string; branchName: string; branchPhone: string | null; salonName: string; services: Array<{ name: string; staffName: string | null; startAt: string | null; durationMinutes: number; price: number }>; total: number; manageLink: string; confirmationSent?: boolean }
 
 const STEPS = ['Services', 'Time', 'Your details'] as const;
 
@@ -69,7 +69,7 @@ export function Component() {
         <div className="rounded-2xl border border-line bg-surface p-6 shadow-card">
           <div className="mb-4 flex size-12 items-center justify-center rounded-full bg-success-soft text-success"><Check className="size-6" aria-hidden /></div>
           <h2 className="text-xl font-semibold">You are booked in</h2>
-          <p className="mt-1 text-muted">We have sent a confirmation to your phone. Booking {done.bookingNumber}.</p>
+          <p className="mt-1 text-muted">{done.confirmationSent ? `We have sent a confirmation to your phone. Booking ${done.bookingNumber}.` : `Your booking number is ${done.bookingNumber}. Keep this page or copy your link below to see, move or cancel your booking.`}</p>
           <div className="mt-5 space-y-1 rounded-xl bg-surface-2 p-4">
             <p className="font-semibold">{fmtDay(done.startAt, branch.timezone, true)} at {fmtTime(done.startAt, branch.timezone)}</p>
             <p className="text-sm text-muted">{done.branchName}</p>

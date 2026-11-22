@@ -36,7 +36,7 @@ describe('online booking', () => {
     const body = { branchId: t.branchId, serviceIds: [hairSpa], startAt: start, customer: { fullName: 'Online Olivia', mobile: '9811122233', email: 'olivia@example.test', marketingConsent: false } };
     const booked = await api().post(`/api/v1/public/${t.code}/bookings`).send(body);
     expect(booked.status).toBe(201);
-    expect(booked.body.data).toMatchObject({ status: 'scheduled', salonName: expect.stringContaining('Salon'), customerName: 'Online Olivia', canChange: true });
+    expect(booked.body.data).toMatchObject({ status: 'scheduled', salonName: expect.stringContaining('Salon'), customerName: 'Online Olivia', canChange: true, confirmationSent: true });
     const token = booked.body.data.manageLink.split('/').pop() as string;
     expect(token.length).toBeGreaterThan(30);
 
