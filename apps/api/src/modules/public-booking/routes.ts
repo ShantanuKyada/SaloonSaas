@@ -6,7 +6,7 @@ import { systemContext, type AuthContext } from '../../core/auth-context.js';
 import { randomToken, sha256 } from '../../core/crypto.js';
 import { AppError } from '../../core/errors.js';
 import { createRouter } from '../../core/router.js';
-import { localDateOf } from '../../core/time.js';
+import { addDays, localDateOf } from '../../core/time.js';
 import { normalizePhoneOrThrow } from '../../core/validation.js';
 import { withSystem, withTenant, type Tx } from '../../db/tenant.js';
 import { createCustomerRecord, findCustomerByMobile } from '../customers/service.js';
@@ -82,6 +82,22 @@ r.get('/:code/availability', { summary: 'Valid start times only', auth: 'public'
       staff: result.staff.filter((s) => s.slots.length > 0).map((s) => ({ staffId: s.staffId, displayName: s.displayName, slots: s.slots })),
       slots: result.slots,
     };
+  });
+});
+
+// A full or closed day: the next day (within three weeks and the booking window) with a free time, in one request.
+r.get('/:code/next-available', { summary: 'The next day with a free time after a given day', auth: 'public', query: availabilityQuery.pick({ branchId: true, date: true, serviceIds: true, staffId: true }), middleware: [limiter] }, async ({ params, query }) => {
+  const org = await salonByCode(params.code!);
+  return withTenant({ orgId: org.id }, async (t) => {
+    let day = query.date;
+    for (let i = 0; i < 21; i += 1) {
+      day = addDays(day, 1);
+      const a = await computeDayAvailability(t, org.id, { branchId: query.branchId, date: day, serviceIds: query.serviceIds, staffId: query.staffId, excludeAppointmentId: undefined, customerId: undefined }, { onlineOnly: true });
+      if (a.beyondBookingWindowDays) return { date: null, firstStartAt: null };
+      const free = query.staffId ? a.staff.find((s) => s.staffId === query.staffId)?.slots ?? [] : a.slots.map((s) => s.startAt);
+      if (free.length) return { date: day, firstStartAt: free[0]! };
+    }
+    return { date: null, firstStartAt: null };
   });
 });
 

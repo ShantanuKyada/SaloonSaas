@@ -47,19 +47,25 @@ export function useVisitPackages(serviceIds: string[], setServiceIds: Dispatch<S
 }
 
 /** The packages and combos on sale at this branch today, as chips next to the services, plus what choosing one means. */
+const FIRST_FEW = 6;
+
 export function PackageChooser({ branchId, chosen, onToggle }: { branchId: string; chosen: string[]; onToggle: (pkg: PackageRow) => void }) {
   const money = useMoney();
   const q = usePackages();
+  const [all, setAll] = useState(false);
   const onSale = sellableAt(q.data, branchId);
   const picked = (q.data ?? []).filter((p) => chosen.includes(p.id));
-  const shown = [...onSale, ...picked.filter((p) => !onSale.some((s) => s.id === p.id))];
+  // Chosen ones first; a long list stays short (the services below matter more) until someone asks for the rest.
+  const shown = [...picked, ...onSale.filter((p) => !chosen.includes(p.id))];
   if (shown.length === 0) return null;
+  const visible = all || shown.length <= FIRST_FEW + 1 ? shown : shown.slice(0, FIRST_FEW);
+  const hidden = shown.length - visible.length;
 
   return (
     <div className="space-y-2">
       <p className="text-xs font-medium text-muted">Packages and combos</p>
       <div className="flex flex-wrap gap-2">
-        {shown.map((p) => {
+        {visible.map((p) => {
           const on = chosen.includes(p.id);
           return (
             <button key={p.id} type="button" aria-pressed={on} onClick={() => onToggle(p)} className={cn('inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors max-md:min-h-10', on ? 'border-primary bg-primary-soft text-primary-soft-fg' : 'border-line bg-surface text-fg hover:border-primary/50')}>
@@ -69,6 +75,7 @@ export function PackageChooser({ branchId, chosen, onToggle }: { branchId: strin
             </button>
           );
         })}
+        {hidden > 0 && <button type="button" onClick={() => setAll(true)} className="rounded-full px-3 py-1.5 text-sm font-medium text-primary hover:underline max-md:min-h-10">Show {hidden} more</button>}
       </div>
       {picked.map((p) => {
         const later = p.items.filter((i) => i.quantity > 1).map((i) => `${i.quantity - 1} × ${i.serviceName}`);

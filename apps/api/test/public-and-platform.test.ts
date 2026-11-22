@@ -25,6 +25,15 @@ describe('online booking', () => {
     expect(JSON.stringify(on.body)).not.toMatch(/organizationId|passwordHash/);
   });
 
+  it('finds the next day with a free time after a full or closed day, in one request', async () => {
+    const res = await api().get(`/api/v1/public/${t.code}/next-available?branchId=${t.branchId}&date=${date}&serviceIds=${hairSpa}`);
+    expect(res.status).toBe(200);
+    const { date: next, firstStartAt } = res.body.data as { date: string; firstStartAt: string };
+    expect(next > date).toBe(true);
+    const thatDay = await api().get(`/api/v1/public/${t.code}/availability?branchId=${t.branchId}&date=${next}&serviceIds=${hairSpa}`);
+    expect(thatDay.body.data.slots.map((s: { startAt: string }) => s.startAt)).toContain(firstStartAt);
+  });
+
   it('offers only valid times, books, and lets the customer reschedule and cancel from a private link', async () => {
     const times = await api().get(`/api/v1/public/${t.code}/availability?branchId=${t.branchId}&date=${date}&serviceIds=${hairSpa}`);
     expect(times.status).toBe(200);
