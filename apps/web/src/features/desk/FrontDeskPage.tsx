@@ -34,8 +34,10 @@ export function Component() {
   const todayList = useQuery({ queryKey: ['appointments', 'desk', branchId, today], queryFn: () => api.list<AppointmentDto>('/appointments', { branchId, from: today, to: today, pageSize: 100, sortDir: 'asc' }), refetchInterval: 20_000, enabled: !!branchId });
 
   const all = todayList.data?.rows ?? [];
-  // Walk-ins have no time yet: first come, first served, by their queue number.
-  const waiting = all.filter((a) => a.status === 'waiting').sort((a, b) => (a.queueNumber ?? 0) - (b.queueNumber ?? 0));
+  // The same queue as the walk-in board (and the "Waiting" figure): anyone still waiting from an earlier day first,
+  // then today's in queue order.
+  const board = useQuery({ queryKey: ['walkins', branchId], queryFn: () => api.get<AppointmentDto[]>('/walkins', { branchId }), refetchInterval: 20_000, enabled: !!branchId });
+  const waiting = (board.data ?? []).filter((a) => a.walkInStage === 'waiting');
   const WAITING_SHOWN = 6;
   const active = all.filter((a) => ['scheduled', 'confirmed', 'checked_in', 'in_service'].includes(a.status)).sort((a, b) => (a.startAt ?? '').localeCompare(b.startAt ?? ''));
   const toBill = all.filter((a) => a.status === 'completed' && !a.invoiceId);

@@ -186,5 +186,14 @@ describe('platform and platform safety', () => {
     const relogin = await api().post('/api/v1/auth/login').send({ identifier: ownerEmail, password: PASSWORD });
     expect(relogin.status).toBe(403);
     expect(relogin.body.errorCode).toBe('ACCOUNT_DISABLED');
+
+    // The salon list leads with active salons; suspended and archived ones come after.
+    const rank = { active: 0, suspended: 1, archived: 2 } as Record<string, number>;
+    const statuses = ((await authed(admin).get('/platform/organizations?pageSize=100')).body.data as Array<{ status: string }>).map((o) => rank[o.status]!);
+    expect(statuses).toEqual([...statuses].sort((a, b) => a - b));
+    // Totals leave out archived salons.
+    await authed(admin).patch(`/platform/organizations/${org}`).send({ status: 'archived' });
+    const before = (await authed(admin).get('/platform/overview')).body.data;
+    expect(before.activeBranches).toBe(Number((await withSystem((tx) => tx.selectFrom('branches as b').innerJoin('organizations as o', 'o.id', 'b.organizationId').select((eb) => eb.fn.countAll<number>().as('n')).where('b.status', '=', 'active').where('o.status', '!=', 'archived').executeTakeFirstOrThrow())).n));
   });
 });

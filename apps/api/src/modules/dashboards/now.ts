@@ -113,7 +113,12 @@ export async function loadSalonNow(tx: Tx, orgId: string, branchIds: string[], n
       const att = absent.find((a) => a.staffId === s.id && a.date === date);
       if (att?.status === 'absent') return { ...base, state: 'absent' as StaffState, label: 'Not in today' };
       const next = mine.filter((i) => i.startAt!.getTime() > nowMs).sort((a, b) => a.startAt!.getTime() - b.startAt!.getTime())[0];
-      return { ...base, state: 'available' as StaffState, label: next ? `Free until ${fmt(next.startAt!.getTime(), tz)}` : 'Free', nextAt: next?.startAt?.toISOString() ?? null };
+      // Free until their next booking, or the end of their working day (or the salon's closing), whichever comes first.
+      const dayEnd = Math.min(windows.find((w) => w.start <= nowMs && nowMs < w.end)!.end, openWindow!.end);
+      const until = next ? Math.min(next.startAt!.getTime(), dayEnd) : dayEnd;
+      // "Free" alone means a good while yet; near the end of the day, say until when, so nobody starts what cannot finish.
+      const label = next || until - nowMs <= 3 * 60 * 60_000 ? `Free until ${fmt(until, tz)}` : 'Free';
+      return { ...base, state: 'available' as StaffState, label, nextAt: next?.startAt?.toISOString() ?? null, freeUntil: new Date(until).toISOString() };
     });
 
     const today = appts.filter((a) => a.branchId === branch.id && a.localDate === date);

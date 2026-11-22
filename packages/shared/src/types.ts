@@ -632,6 +632,8 @@ export interface SalonNow {
     label: string;
     currentAppointmentId: string | null;
     nextAt: string | null;
+    /** When free: until when (their next booking, or the end of their working day / the salon's closing, whichever is first). */
+    freeUntil?: string | null;
   }>;
 }
 

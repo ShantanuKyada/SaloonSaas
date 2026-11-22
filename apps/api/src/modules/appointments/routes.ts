@@ -260,6 +260,8 @@ walkins.get('/', { summary: 'Walk-in board for a branch and day', permissions: [
           .where('source', '=', 'walk_in')
           .where('localDate', '<', date)
           .where('status', 'in', ['waiting', 'checked_in', 'in_service'])
+          .orderBy('localDate')
+          .orderBy('queueNumber')
           .execute();
     return loadAppointmentDtos(t, auth, orgId, [...stale, ...rows].map((x) => x.id), await loadSettings(t, orgId));
   });

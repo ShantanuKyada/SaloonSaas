@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Building2, CalendarCheck, CalendarPlus, CalendarRange, ChevronDown, ChevronRight, DoorOpen, Home, Keyboard, KeyRound, LogOut, Menu as MenuIcon, Moon, Plus, Receipt, Search, ShieldCheck, Store, Sun, UserPlus, Users, Wallet, X, CalendarDays } from 'lucide-react';
 import { Dialog } from 'radix-ui';
 import { Suspense, useState } from 'react';
-import { Link, NavLink, Outlet, useMatches, useNavigate } from 'react-router';
+import { Link, NavLink, Outlet, useLocation, useMatches, useNavigate } from 'react-router';
 import { Button, ButtonLink, IconButton } from '@/components/ui/button';
 import { Avatar, InlineNotice, Spinner } from '@/components/ui/display';
 import { Menu } from '@/components/ui/overlay';
@@ -234,6 +234,7 @@ function MobileBottomNav({ onMore }: { onMore: () => void }) {
 
 function OnboardingBanner() {
   const can = useCan();
+  const onGuide = useLocation().pathname === '/settings/setup';
   const [dismissed, setDismissed] = useState(() => sessionStorage.getItem('salonos:onboarding-dismissed') === '1');
   const { data } = useQuery({
     queryKey: ['onboarding'],
@@ -241,7 +242,8 @@ function OnboardingBanner() {
     enabled: can('settings.manage') && !dismissed,
     staleTime: 60_000,
   });
-  if (!data || data.completedAt || dismissed || data.completed >= data.total) return null;
+  // Not on the setup guide itself: "Continue setup" would lead to the page already open.
+  if (!data || data.completedAt || dismissed || onGuide || data.completed >= data.total) return null;
   return (
     <div className="mb-4">
       <InlineNotice
