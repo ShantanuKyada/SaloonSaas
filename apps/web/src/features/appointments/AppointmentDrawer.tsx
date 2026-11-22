@@ -1,6 +1,6 @@
 import type { AppointmentEventDto } from '@salon/shared';
 import { APPOINTMENT_SOURCE_LABELS } from '@salon/shared';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Clock, Copy, MessageCircle, Package, Phone, Receipt } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
@@ -12,7 +12,9 @@ import { Input } from '@/components/ui/form';
 import { toast } from 'sonner';
 import { toastError } from '@/app/providers';
 import { api } from '@/lib/api';
-import { useCan, useUser } from '@/lib/auth';
+import { useCan, useFeature, useUser } from '@/lib/auth';
+import { Field, Textarea } from '@/components/ui/form';
+import { RepeatDialog, everyLabel } from './RepeatDialog';
 import { useBranch } from '@/lib/branch';
 import { fmtDateTime, fmtDay, fmtDuration, fmtTime } from '@/lib/format';
 import { useAppointment } from '@/lib/queries';
@@ -34,7 +36,19 @@ export function AppointmentDrawer({ id, onClose }: { id: string; onClose: () => 
   const [link, setLink] = useState<string | null>(null);
   const makeLink = useMutation({ mutationFn: () => api.post<{ url: string }>(`/appointments/${id}/customer-link`), onSuccess: (r) => setLink(r.url), onError: toastError });
   const canLink = !!a && a.status !== 'waiting' && can('appointments.create');
-  const secondary = [...list.filter((x) => !x.primary), ...(canLink ? [{ label: 'Customer’s booking link', run: () => makeLink.mutate(), tone: undefined }] : [])];
+  // Repeating visits: set up a repeat, or stop this visit and the later ones.
+  const featureOn = useFeature();
+  const [repeating, setRepeating] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const upcoming = !!a && ['scheduled', 'confirmed'].includes(a.status) && !!a.startAt;
+  const canRepeat = upcoming && !a!.series && can('appointments.create') && featureOn('recurring');
+  const canStop = upcoming && (a!.series?.later ?? 0) > 0 && can('appointments.cancel');
+  const secondary = [
+    ...list.filter((x) => !x.primary),
+    ...(canRepeat ? [{ label: 'Repeat this booking…', run: () => setRepeating(true), tone: undefined }] : []),
+    ...(canLink ? [{ label: 'Customer’s booking link', run: () => makeLink.mutate(), tone: undefined }] : []),
+    ...(canStop ? [{ label: 'Cancel this and later visits…', run: () => setStopping(true), tone: 'danger' as const }] : []),
+  ];
 
   return (
     <>
@@ -64,6 +78,7 @@ export function AppointmentDrawer({ id, onClose }: { id: string; onClose: () => 
               <StatusBadge status={a.status} />
               {a.paymentStatus && <PaymentBadge status={a.paymentStatus} />}
               {a.rescheduleCount > 0 && <Badge tone="neutral">Rescheduled {a.rescheduleCount}×</Badge>}
+              {a.series && <Badge tone="info">{everyLabel(a.series.everyWeeks)}{a.series.position ? ` · visit ${a.series.position} of ${a.series.count}` : ''}</Badge>}
             </div>
 
             <div className="flex items-start gap-3 rounded-xl border border-line p-3">
@@ -132,6 +147,8 @@ export function AppointmentDrawer({ id, onClose }: { id: string; onClose: () => 
       </Drawer>
       {actions.dialogs}
       {link && a && <BookingLinkDialog url={link} customerName={a.customer.fullName} mobile={a.customer.mobile} onClose={() => setLink(null)} />}
+      {repeating && a && <RepeatDialog appointment={a} timezone={timezone} onClose={() => setRepeating(false)} />}
+      {stopping && a?.series && <StopRepeatsDialog id={a.id} later={a.series.later} onClose={() => setStopping(false)} />}
     </>
   );
 }
@@ -153,6 +170,23 @@ function BookingLinkDialog({ url, customerName, mobile, onClose }: { url: string
     <Modal open onOpenChange={(o) => !o && onClose()} title="Customer’s booking link" description={`A private link for ${customerName}. It opens this booking and their other visits. Anyone with the link can see them, so send it only to the customer.`} size="sm"
       footer={<><Button variant="outline" icon={<Copy className="size-4" />} onClick={() => void copy()}>Copy link</Button>{phone.length >= 10 && <a className="inline-flex h-10 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-fg hover:opacity-90" href={`https://wa.me/${phone}?text=${text}`} target="_blank" rel="noreferrer"><MessageCircle className="size-4" aria-hidden />Send on WhatsApp</a>}</>}>
       <Input readOnly value={url} aria-label="Booking link" onFocus={(e) => e.currentTarget.select()} />
+    </Modal>
+  );
+}
+
+/** Cancels this visit and the later ones of its series, with one message to the customer. */
+function StopRepeatsDialog({ id, later, onClose }: { id: string; later: number; onClose: () => void }) {
+  const client = useQueryClient();
+  const [reason, setReason] = useState('');
+  const stop = useMutation({
+    mutationFn: () => api.post<{ cancelled: number }>(`/appointments/${id}/cancel-following`, { reason: reason.trim() || undefined }),
+    onSuccess: async (r) => { toast.success(r.cancelled === 1 ? '1 visit cancelled' : `${r.cancelled} visits cancelled`); await client.invalidateQueries(); onClose(); },
+    onError: toastError,
+  });
+  return (
+    <Modal open onOpenChange={(o) => !o && onClose()} title="Cancel this and later visits?" description={`This visit and the ${later === 1 ? 'next one' : `${later} after it`} will be cancelled. Earlier visits stay booked.`} size="sm"
+      footer={<><Button variant="outline" onClick={onClose}>Keep them</Button><Button variant="danger" loading={stop.isPending} onClick={() => stop.mutate()}>Cancel {later + 1} visits</Button></>}>
+      <Field label="Reason" optional><Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="For example: moving away" /></Field>
     </Modal>
   );
 }

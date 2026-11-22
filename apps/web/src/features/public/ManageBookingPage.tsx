@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarClock, Phone, RotateCcw, Star, XCircle } from 'lucide-react';
+import { CalendarClock, Phone, Repeat, RotateCcw, Star, XCircle } from 'lucide-react';
+import { Field, Select } from '@/components/ui/form';
+import { REPEAT_TIMES, REPEAT_WEEKS, RepeatOutcome, everyLabel, repeatDates } from '@/features/appointments/RepeatDialog';
 import { useState } from 'react';
 import { useParams } from 'react-router';
 import { Badge, InlineNotice, Skeleton } from '@/components/ui/display';
@@ -11,16 +13,17 @@ import { friendlyError } from '@/lib/errors';
 import { fmtDay, fmtDuration, fmtTime, money } from '@/lib/format';
 import { PublicFrame } from './PublicFrame';
 import { SlotPicker } from './SlotPicker';
-import type { AppointmentStatus } from '@salon/shared';
+import type { AppointmentStatus, RepeatResultDto } from '@salon/shared';
 
-interface Booking { bookingNumber: string; status: AppointmentStatus; startAt: string | null; endAt: string | null; branchName: string; branchPhone: string | null; salonName: string; salonCode: string; timezone: string; branchId: string; serviceIds: string[]; customerName: string; services: Array<{ name: string; staffName: string | null; startAt: string | null; durationMinutes: number; price: number }>; total: number; canChange: boolean; canMove: boolean; selfService: boolean }
+interface Booking { bookingNumber: string; status: AppointmentStatus; startAt: string | null; endAt: string | null; branchName: string; branchPhone: string | null; salonName: string; salonCode: string; timezone: string; branchId: string; serviceIds: string[]; customerName: string; services: Array<{ name: string; staffName: string | null; startAt: string | null; durationMinutes: number; price: number }>; total: number; canChange: boolean; canMove: boolean; selfService: boolean; repeats: Repeats | null; canRepeat: boolean }
+interface Repeats { everyWeeks: number; later: number }
 interface Rebook { branchId: string; serviceIds: string[]; staffId: string | null; staffName: string | null }
-interface Visit { id: string; bookingNumber: string; status: AppointmentStatus; startAt: string | null; branchId: string; branchName: string; branchPhone: string | null; timezone: string; services: Array<{ serviceId: string; name: string; staffName: string | null; durationMinutes: number }>; total: number; isThis: boolean; canChange: boolean; rebook: Rebook | null }
+interface Visit { id: string; bookingNumber: string; status: AppointmentStatus; startAt: string | null; branchId: string; branchName: string; branchPhone: string | null; timezone: string; services: Array<{ serviceId: string; name: string; staffName: string | null; durationMinutes: number }>; total: number; isThis: boolean; canChange: boolean; rebook: Rebook | null; repeats: Repeats | null }
 interface Visits { customerName: string; salonName: string; salonCode: string; currency: string; canBook: boolean; upcoming: Visit[]; past: Visit[]; usual: (Rebook & { services: string[]; branchName: string; timezone: string; times: number }) | null }
 interface Booked { bookingNumber: string; startAt: string; timezone: string; confirmationSent: boolean }
 
 /** What the cancel and move dialogs act on: the link's own booking (id null) or another of the customer's bookings. */
-interface Target { id: string | null; when: string; servicesLabel: string; branchId: string; serviceIds: string[]; timezone: string }
+interface Target { id: string | null; when: string; servicesLabel: string; branchId: string; serviceIds: string[]; timezone: string; later: number }
 /** "Book again": which services, where, and with whom they had them. */
 interface Again { rebook: Rebook; servicesLabel: string; timezone: string }
 
@@ -43,13 +46,16 @@ export function Component() {
   const [again, setAgain] = useState<Again | null>(null);
   const [slot, setSlot] = useState<{ startAt: string; staffId: string | null } | null>(null);
   const [message, setMessage] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
+  const [following, setFollowing] = useState(false);
+  const [repeat, setRepeat] = useState<{ everyWeeks: number; times: number } | null>(null);
+  const [repeated, setRepeated] = useState<RepeatResultDto | null>(null);
   const refresh = () => Promise.all([client.invalidateQueries({ queryKey: ['public', 'booking', token] }), client.invalidateQueries({ queryKey: ['public', 'visits', token] })]);
-  const close = () => { setMode(null); setTarget(null); setAgain(null); setSlot(null); };
+  const close = () => { setMode(null); setTarget(null); setAgain(null); setSlot(null); setFollowing(false); setRepeat(null); };
   const path = (id: string | null, action: string) => (id ? `/public/manage/${token}/visits/${id}/${action}` : `/public/manage/${token}/${action}`);
 
   const cancel = useMutation({
-    mutationFn: () => publicApi.post(path(target!.id, 'cancel')),
-    onSuccess: async () => { close(); setMessage({ tone: 'success', text: 'Your booking has been cancelled. We hope to see you another time.' }); await refresh(); },
+    mutationFn: () => publicApi.post(path(target!.id, 'cancel'), { following }),
+    onSuccess: async () => { const all = following; close(); setMessage({ tone: 'success', text: all ? 'Those visits have been cancelled. We hope to see you another time.' : 'Your booking has been cancelled. We hope to see you another time.' }); await refresh(); },
     onError: (e) => { close(); setMessage({ tone: 'danger', text: friendlyError(e).message }); },
   });
   const move = useMutation({
@@ -65,6 +71,12 @@ export function Component() {
       await refresh();
     },
     onError: (e) => { setMessage({ tone: 'danger', text: friendlyError(e).message }); setSlot(null); },
+  });
+
+  const repeatIt = useMutation({
+    mutationFn: () => publicApi.post<RepeatResultDto>(`/public/manage/${token}/repeat`, repeat!),
+    onSuccess: async (r) => { close(); setMessage(null); setRepeated(r); await refresh(); },
+    onError: (e) => { close(); setMessage({ tone: 'danger', text: friendlyError(e).message }); },
   });
 
   if (q.isLoading) return <PublicFrame title="Your booking"><p role="status" className="py-16 text-center text-muted">Loading…</p></PublicFrame>;
@@ -83,18 +95,20 @@ export function Component() {
   const active = ['scheduled', 'confirmed'].includes(b.status);
   const v = visits.data;
   const others = v?.upcoming.filter((u) => !u.isThis) ?? [];
-  const openThis = (m: 'cancel' | 'move') => { setMessage(null); setMode(m); setTarget({ id: null, when: whenOf(b.startAt, b.timezone), servicesLabel: b.services.map((s) => s.name).join(', '), branchId: b.branchId, serviceIds: b.serviceIds, timezone: b.timezone }); };
-  const openOther = (m: 'cancel' | 'move', u: Visit) => { setMessage(null); setMode(m); setTarget({ id: u.id, when: whenOf(u.startAt, u.timezone), servicesLabel: servicesOf(u), branchId: u.branchId, serviceIds: u.services.map((s) => s.serviceId), timezone: u.timezone }); };
+  const openThis = (m: 'cancel' | 'move') => { setMessage(null); setRepeated(null); setMode(m); setTarget({ id: null, when: whenOf(b.startAt, b.timezone), servicesLabel: b.services.map((s) => s.name).join(', '), branchId: b.branchId, serviceIds: b.serviceIds, timezone: b.timezone, later: b.repeats?.later ?? 0 }); };
+  const openOther = (m: 'cancel' | 'move', u: Visit) => { setMessage(null); setRepeated(null); setMode(m); setTarget({ id: u.id, when: whenOf(u.startAt, u.timezone), servicesLabel: servicesOf(u), branchId: u.branchId, serviceIds: u.services.map((s) => s.serviceId), timezone: u.timezone, later: u.repeats?.later ?? 0 }); };
   const openAgain = (rebook: Rebook, servicesLabel: string, timezone: string) => { setMessage(null); setSlot(null); setAgain({ rebook, servicesLabel, timezone }); };
 
   return (
     <PublicFrame title={b.salonName} subtitle={`Booking ${b.bookingNumber}`}>
       <div className="space-y-4">
         {message && <InlineNotice tone={message.tone}>{message.text}</InlineNotice>}
+        {repeated && <InlineNotice tone={repeated.booked.length ? 'success' : 'warning'} title={repeated.booked.length ? 'Your repeating visits are booked' : 'No more visits could be booked'}><RepeatOutcome result={repeated} timezone={b.timezone} /></InlineNotice>}
         <div className="rounded-2xl border border-line bg-surface p-5 shadow-card">
           <div className="flex flex-wrap items-center gap-2"><StatusBadge status={b.status} />{b.status === 'cancelled' && <Badge>No longer active</Badge>}</div>
           {b.startAt && <p className="mt-3 text-lg font-semibold">{whenOf(b.startAt, b.timezone)}</p>}
           <p className="text-sm text-muted">{b.branchName} · for {b.customerName}</p>
+          {b.repeats && <p className="mt-1 flex items-center gap-1.5 text-sm text-info"><Repeat className="size-4" aria-hidden />{everyLabel(b.repeats.everyWeeks)}{b.repeats.later ? ` · ${b.repeats.later} more ${b.repeats.later === 1 ? 'visit' : 'visits'} booked after this one` : ''}</p>}
           <ul className="mt-4 divide-y divide-line text-sm">{b.services.map((s, i) => <li key={i} className="flex justify-between gap-3 py-2"><span>{s.name}{s.staffName ? <span className="text-muted"> with {s.staffName}</span> : null}</span><span className="text-muted">{fmtDuration(s.durationMinutes)}</span></li>)}</ul>
           <p className="mt-2 flex justify-between border-t border-line pt-3 font-semibold"><span>Estimated total</span><span>{money(b.total)}</span></p>
         </div>
@@ -102,6 +116,7 @@ export function Component() {
           <div className="flex flex-wrap gap-2">
             {b.canMove && <Button size="lg" icon={<CalendarClock className="size-4" />} onClick={() => openThis('move')}>Change time</Button>}
             <Button size="lg" variant="outline" icon={<XCircle className="size-4" />} onClick={() => openThis('cancel')}>Cancel booking</Button>
+            {b.canRepeat && <Button size="lg" variant="outline" icon={<Repeat className="size-4" />} onClick={() => { setMessage(null); setRepeated(null); setRepeat({ everyWeeks: 4, times: 4 }); }}>Repeat this booking</Button>}
           </div>
         )}
         {active && !b.canChange && <InlineNotice tone="info">It is too close to your appointment to change it online. Please call the salon{b.branchPhone ? ` on ${b.branchPhone}` : ''}.</InlineNotice>}
@@ -140,6 +155,7 @@ export function Component() {
                         <div className="min-w-0 flex-1">
                           <p className="font-medium">{whenOf(u.startAt, u.timezone)}</p>
                           <p className="text-sm text-muted">{servicesOf(u)}{peopleOf(u) ? ` with ${peopleOf(u)}` : ''} · {u.branchName}</p>
+                          {u.repeats && <p className="mt-0.5 flex items-center gap-1 text-xs text-info"><Repeat className="size-3.5" aria-hidden />{everyLabel(u.repeats.everyWeeks)}</p>}
                         </div>
                         {u.canChange ? (
                           <div className="flex gap-2">
@@ -180,11 +196,31 @@ export function Component() {
       {mode === 'cancel' && target && (
         <Modal open onOpenChange={(o) => !o && close()} title="Cancel this booking?" description={target.when || undefined} size="sm" footer={<><Button variant="outline" onClick={close}>Keep my booking</Button><Button variant="danger" loading={cancel.isPending} onClick={() => cancel.mutate()}>Yes, cancel it</Button></>}>
           <p className="text-sm text-muted">{target.servicesLabel}. The time will be released for someone else. You can always book again.</p>
+          {target.later > 0 && (
+            <fieldset className="mt-4 space-y-2">
+              <legend className="mb-1 text-sm font-medium">This visit repeats</legend>
+              <label className="flex items-center gap-2 text-sm"><input type="radio" name="following" checked={!following} onChange={() => setFollowing(false)} className="size-4 accent-primary" />Only this visit</label>
+              <label className="flex items-center gap-2 text-sm"><input type="radio" name="following" checked={following} onChange={() => setFollowing(true)} className="size-4 accent-primary" />This and the {target.later === 1 ? 'next visit' : `${target.later} later visits`}</label>
+            </fieldset>
+          )}
         </Modal>
       )}
       {mode === 'move' && target && (
         <Modal open onOpenChange={(o) => !o && close()} title="Choose a new time" description={target.servicesLabel} footer={<><Button variant="outline" onClick={close}>Keep current time</Button><Button loading={move.isPending} disabled={!slot} onClick={() => move.mutate()}>Move my booking</Button></>}>
           <SlotPicker code={b.salonCode} branchId={target.branchId} serviceIds={target.serviceIds} timezone={target.timezone} value={slot} onChange={setSlot} />
+        </Modal>
+      )}
+      {repeat && b.startAt && (
+        <Modal open onOpenChange={(o) => !o && close()} title="Repeat this booking" description={`${b.services.map((s) => s.name).join(', ')} at ${fmtTime(b.startAt, b.timezone)}`} size="sm"
+          footer={<><Button variant="outline" onClick={close}>Not now</Button><Button loading={repeatIt.isPending} onClick={() => repeatIt.mutate()}>Book {repeat.times - 1} more {repeat.times - 1 === 1 ? 'visit' : 'visits'}</Button></>}>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="How often"><Select value={repeat.everyWeeks} onChange={(e) => setRepeat({ ...repeat, everyWeeks: Number(e.target.value) })}>{REPEAT_WEEKS.map((w) => <option key={w} value={w}>{everyLabel(w)}</option>)}</Select></Field>
+              <Field label="Visits in all"><Select value={repeat.times} onChange={(e) => setRepeat({ ...repeat, times: Number(e.target.value) })}>{REPEAT_TIMES.map((n) => <option key={n} value={n}>{n} visits</option>)}</Select></Field>
+            </div>
+            <ol className="space-y-0.5 text-sm text-muted">{repeatDates(b.startAt, repeat.everyWeeks, repeat.times).map((d, i) => <li key={d}>{fmtDay(d, b.timezone, true)}{i === 0 ? ' (this booking)' : ''}</li>)}</ol>
+            <p className="text-sm text-muted">We book the same person when they are free, otherwise someone else who does these services. You can change or cancel any visit later.</p>
+          </div>
         </Modal>
       )}
       {again && (

@@ -31,6 +31,21 @@ your role allows, so you may not see every item mentioned here.
 Booking several services in a row? Tick them all; they are scheduled back-to-back. If one person cannot do all of them,
 switch on *Different team members for each service*.
 
+### Repeating visits (every few weeks)
+
+Regulars who come every 4 weeks? Choose **Repeat** when booking (for example *Every 4 weeks*, *6 visits*), or open an existing
+booking and use **More actions → Repeat this booking…**. Each visit is booked at the same time of day with the same person
+when they are free; otherwise with someone else who does those services. Dates nobody can do (closed, fully booked, or beyond
+how far ahead you take bookings) are skipped and listed, so you can book them by hand. Each visit is an ordinary booking:
+move or cancel it on its own, or use **More actions → Cancel this and later visits…** to stop the rest in one go. The customer
+gets reminders before every visit.
+
+### Sending a customer their link
+
+Every booking confirmation carries the customer's **private link** (when WhatsApp, SMS or email is set up). No messaging yet,
+or the customer lost it? Open the booking, **More actions → Customer's booking link**, then **Copy link** or **Send on
+WhatsApp**. Anyone with the link can see that customer's bookings, so send it only to them.
+
 ### Walk-ins
 
 Press `W`, find or add the customer, tap the services. Either choose a team member and *Start the service right now*, or *Add to
@@ -168,6 +183,26 @@ Signing in shows only your appointments for today: the one in progress, the next
 Share `https://your-salon-address/book/<salon-code>` (see *Settings → Booking*). The customer chooses a branch and services, a day
 and a time that is really free, and enters a name and mobile number. They receive a private link to **change the time** or
 **cancel** (not within two hours of the appointment: they are told to call instead). No account or password is needed.
+
+The same private link (sent with every confirmation, desk bookings too) also shows **Your visits**:
+
+* **Coming up:** their other bookings, each with *Change time* and *Cancel*.
+* **Before:** what they had, each with **Book again** (same services and branch, starting with the same stylist; *Anyone* is
+  one tap away).
+* **Your usual:** services they had at least twice, with the person they usually see, booked in one tap.
+* **Repeat this booking:** every few weeks, for a number of visits; when cancelling a repeating visit they choose *only this
+  visit* or *this and the later ones*.
+
+Moving a booking and booking again need online booking to be on (*Settings → Booking*). Links stop working after 180 days.
+
+## SalonOS platform team: features and support mode
+
+The SalonOS team can switch whole parts of SalonOS on or off for a salon (online booking, customer self-service, repeating
+appointments, walk-ins, packages, offers, campaigns, attendance, reports, the staff app). A switched-off part disappears for
+everyone in that salon, owner included; opening one of its pages says *This part of SalonOS is switched off for your salon*.
+
+To help a salon, the team can open it in **support mode**: the salon's own screens, as its owner sees them, for up to an hour.
+Everything done in support mode appears in the salon's activity log as *SalonOS platform team*, marked *(platform support)*.
 
 ## When something does not work
 

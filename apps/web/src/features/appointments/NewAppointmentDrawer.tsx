@@ -1,4 +1,4 @@
-import { APPOINTMENT_SOURCE_LABELS, APPOINTMENT_SOURCES, type AppointmentDto, type AvailabilityResult, type AppointmentSource } from '@salon/shared';
+import { APPOINTMENT_SOURCE_LABELS, APPOINTMENT_SOURCES, type AppointmentDto, type AvailabilityResult, type AppointmentSource, type RepeatResultDto } from '@salon/shared';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CalendarCheck, ChevronDown, Package } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -14,7 +14,8 @@ import { Checkbox, DateInput, Field, Select, Switch, Textarea } from '@/componen
 import { Drawer } from '@/components/ui/overlay';
 import type { NewAppointmentPrefill } from '@/features/quick/QuickActions';
 import { api } from '@/lib/api';
-import { useCan } from '@/lib/auth';
+import { useCan, useFeature } from '@/lib/auth';
+import { REPEAT_TIMES, REPEAT_WEEKS, everyLabel } from './RepeatDialog';
 import { useBranch } from '@/lib/branch';
 import { friendlyError } from '@/lib/errors';
 import { addDaysTo, fmtDay, fmtDuration, fmtTime, localDate, todayIn } from '@/lib/format';
@@ -59,6 +60,10 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
   const [source, setSource] = useState<AppointmentSource>('phone');
   const [confirmed, setConfirmed] = useState(false);
   const [notify, setNotify] = useState(true);
+  // Repeating visits (0 = does not repeat).
+  const repeatsOn = useFeature()('recurring');
+  const [repeatWeeks, setRepeatWeeks] = useState(0);
+  const [repeatTimes, setRepeatTimes] = useState(6);
   const [allowOutside, setAllowOutside] = useState(false);
 
   const services = useServices(branchId, { popular: true });
@@ -147,7 +152,7 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
   };
 
   const create = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const items = serviceIds.map((serviceId, i) => {
         const pkg = packageFor(serviceId);
         return {
@@ -158,11 +163,21 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
           buyPackageId: visitPackages.buyPackage[serviceId],
         };
       });
-      return api.post<AppointmentDto>('/appointments', { branchId, customerId, source, status: confirmed ? 'confirmed' : 'scheduled', notes: notes || null, internalNotes: internalNotes || null, items, notifyCustomer: notify, allowOutsideHours: allowOutside });
+      const a = await api.post<AppointmentDto>('/appointments', { branchId, customerId, source, status: confirmed ? 'confirmed' : 'scheduled', notes: notes || null, internalNotes: internalNotes || null, items, notifyCustomer: notify, allowOutsideHours: allowOutside });
+      if (!repeatWeeks) return { a, repeat: null };
+      // The booking stands even if the repeats cannot be made; say so rather than fail the whole thing.
+      const repeat = await api.post<RepeatResultDto>(`/appointments/${a.id}/repeat`, { everyWeeks: repeatWeeks, times: repeatTimes }).catch((e: unknown) => friendlyError(e).message);
+      return { a, repeat };
     },
-    onSuccess: (a) => {
+    onSuccess: ({ a, repeat }) => {
       for (const key of ['appointments', 'calendar', 'customer-360', 'dashboard', 'availability', 'walkins']) void client.invalidateQueries({ queryKey: [key] });
       toast.success(`Booked ${a.customer.fullName.split(' ')[0]} · ${fmtDay(a.startAt, tz)} ${fmtTime(a.startAt, tz)}`, { description: `${a.items.map((i) => `${i.serviceName} with ${i.staffName}`).join(', ')} · ${a.bookingNumber}`, action: { label: 'View', onClick: () => navigate(`/appointments/${a.id}`) } });
+      if (typeof repeat === 'string') toast.error('The booking is made, but the repeats could not be booked', { description: repeat });
+      else if (repeat) {
+        const more = `${everyLabel(repeatWeeks)}: ${repeat.booked.length} more ${repeat.booked.length === 1 ? 'visit' : 'visits'} booked`;
+        if (repeat.skipped.length) toast.warning(more, { description: `Not booked: ${repeat.skipped.map((x) => `${fmtDay(x.startAt, tz)} (${x.reason})`).join('; ')}`, duration: 12_000 });
+        else toast.success(more, { description: repeat.booked.some((b) => b.staffChanged) ? 'Some visits are with someone else, as the usual person is busy then.' : undefined });
+      }
       prefill.onCreated?.(a.id);
       onClose();
     },
@@ -297,6 +312,22 @@ export default function NewAppointmentDrawer({ prefill, onClose }: { prefill: Ne
             </div>
           )}
         </section>
+
+        {repeatsOn && (
+          <section className="grid grid-cols-2 gap-3">
+            <Field label="Repeat">
+              <Select value={repeatWeeks} onChange={(e) => setRepeatWeeks(Number(e.target.value))}>
+                <option value={0}>Does not repeat</option>
+                {REPEAT_WEEKS.map((w) => <option key={w} value={w}>{everyLabel(w)}</option>)}
+              </Select>
+            </Field>
+            {repeatWeeks > 0 && (
+              <Field label="Visits in all">
+                <Select value={repeatTimes} onChange={(e) => setRepeatTimes(Number(e.target.value))}>{REPEAT_TIMES.map((n) => <option key={n} value={n}>{n} visits</option>)}</Select>
+              </Field>
+            )}
+          </section>
+        )}
 
         <section>
           <button type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen((o) => !o)} className="flex items-center gap-1.5 text-sm font-medium text-primary">

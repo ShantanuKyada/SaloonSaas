@@ -43,6 +43,7 @@ export async function loadAppointmentDtos(tx: Tx, auth: AuthContext, orgId: stri
       'a.invoiceId',
       'a.version',
       'a.createdAt',
+      'a.seriesId',
       'c.id as customerId',
       'c.fullName as customerName',
       'c.mobile as customerMobile',
@@ -87,6 +88,7 @@ export async function loadAppointmentDtos(tx: Tx, auth: AuthContext, orgId: stri
 
   const visible = canSeeContact(auth, settings);
   const byId = new Map(rows.map((r) => [r.id, r]));
+  const series = await seriesInfo(tx, orgId, rows);
   return ids
     .map((id) => byId.get(id))
     .filter((r): r is NonNullable<typeof r> => !!r)
@@ -143,8 +145,31 @@ export async function loadAppointmentDtos(tx: Tx, auth: AuthContext, orgId: stri
         version: a.version,
         createdAt: a.createdAt.toISOString(),
         createdByName: a.createdByName,
+        series: series(a.id, a.seriesId),
       };
     });
+}
+
+const STILL_TO_COME = ['scheduled', 'confirmed'];
+
+/** Where each appointment sits in its repeating series (if any). */
+async function seriesInfo(tx: Tx, orgId: string, rows: Array<{ id: string; seriesId: string | null }>) {
+  const ids = [...new Set(rows.map((r) => r.seriesId).filter((x): x is string => !!x))];
+  if (!ids.length) return () => null;
+  const [defs, visits] = await Promise.all([
+    tx.selectFrom('appointmentSeries').select(['id', 'everyWeeks']).where('organizationId', '=', orgId).where('id', 'in', ids).execute(),
+    tx.selectFrom('appointments').select(['id', 'seriesId', 'status', 'startAt']).where('organizationId', '=', orgId).where('seriesId', 'in', ids).orderBy('startAt').execute(),
+  ]);
+  return (id: string, seriesId: string | null): AppointmentDto['series'] => {
+    const def = seriesId ? defs.find((d) => d.id === seriesId) : undefined;
+    if (!def) return null;
+    const all = visits.filter((v) => v.seriesId === seriesId);
+    const live = all.filter((v) => v.status !== 'cancelled');
+    const me = all.find((v) => v.id === id);
+    const at = live.findIndex((v) => v.id === id);
+    const later = me?.startAt ? all.filter((v) => v.id !== id && STILL_TO_COME.includes(v.status) && v.startAt && v.startAt > me.startAt!).length : 0;
+    return { id: def.id, everyWeeks: def.everyWeeks, position: at >= 0 ? at + 1 : null, count: live.length, later };
+  };
 }
 
 /** Staff-role users only see appointments in which they perform a service. */
